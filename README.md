@@ -1,4 +1,4 @@
-# NTU Gemini Vibe Bridge
+# NTU Gemini enterprise files link
 
 Use NTU Gemini Enterprise to edit a project folder on your Windows PC. You describe the changes in chat, and the bridge moves them through your NTU OneDrive.
 
