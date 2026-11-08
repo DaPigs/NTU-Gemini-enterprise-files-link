@@ -9,7 +9,6 @@ const HEADER = '# VibeBridge Delta v2\n';
 const STATE = '.vibebridge-state';
 const PATCH_LIMIT = 7_000_000;
 const FILE_LIMIT = 16 * 1024 * 1024;
-const SHA = /^[0-9a-f]{64}$/;
 const ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -117,7 +116,7 @@ function publishSnapshot(root, packedPath, destination) {
             // Repomix can strip final newlines. Restore only those line breaks from approved files.
             if (view && view.eol !== 'mixed' &&
                 (view.text === packedText || view.text.replace(/\n+$/, '') === packedText)) {
-                files[name] = { ...view, sha256: digest(bytes) };
+                files[name] = view;
             }
         } catch {
             // A file can disappear, be filtered, or change during packing. Its packed view stays read-only.
@@ -134,8 +133,8 @@ function publishSnapshot(root, packedPath, destination) {
         format: snapshot.format,
         project: snapshot.project,
         snapshotId: snapshot.snapshotId,
-        files: Object.fromEntries(Object.entries(files).filter(([, entry]) => entry.sha256)
-            .map(([name, entry]) => [name, entry.sha256]))
+        files: Object.fromEntries(Object.entries(files).filter(([, entry]) => entry.eol)
+            .map(([name]) => [name, true]))
     };
     writeAtomic(destination, JSON.stringify(snapshot, null, 2) + '\n');
     writeAtomic(path.join(state, 'snapshot.json'), JSON.stringify(base));
@@ -187,7 +186,7 @@ function prepare(root, patch, snapshot) {
     requireThat(Array.isArray(patch.operations) && patch.operations.length > 0 && patch.operations.length <= 200,
         'Expected 1 to 200 operations.');
     return patch.operations.map((operation) => {
-        const { op, path: relative, baseSha256, sha256 } = operation;
+        const { op, path: relative } = operation;
         const file = safePath(root, relative);
         const key = relative.toLowerCase();
         requireThat(![...paths].some((prior) => prior === key || prior.startsWith(key + '/') || key.startsWith(prior + '/')),
@@ -197,19 +196,18 @@ function prepare(root, patch, snapshot) {
         const before = op === 'create' ? null : readFile(file);
         if (op === 'create') {
             requireThat(!info(file), 'Create would overwrite an existing path: ' + relative);
-        } else {
-            requireThat(SHA.test(baseSha256) && digest(before) === baseSha256, 'Base SHA-256 mismatch: ' + relative);
         }
+        const isSnapshotText = Object.hasOwn(snapshot.files, relative);
 
         let after;
         if (op === 'edit') {
-            requireThat(snapshot.files[relative] === baseSha256, 'Text edit is not based on this snapshot: ' + relative);
+            requireThat(isSnapshotText, 'Text edit requires exact text in the snapshot: ' + relative);
             after = applyEdits(before, operation.edits);
         } else if (op === 'create' || op === 'replace') {
             // Existing snapshot text must use hunks. Full replacements are for binaries or
             // text whose exact bytes could not be reconstructed from the packed view.
             const view = before && textView(before);
-            requireThat(op === 'create' || !snapshot.files[relative] || view?.eol === 'mixed',
+            requireThat(op === 'create' || !isSnapshotText || view?.eol === 'mixed',
                 'Use text edits for existing snapshot text: ' + relative);
             after = encodedBytes(operation);
         } else if (op === 'delete') {
@@ -219,8 +217,7 @@ function prepare(root, patch, snapshot) {
             throw new Error('Unsupported patch operation: ' + op);
         }
         if (after !== null) {
-            requireThat(after.length <= FILE_LIMIT && SHA.test(sha256) && digest(after) === sha256,
-                'Output SHA-256 or size mismatch: ' + relative);
+            requireThat(after.length <= FILE_LIMIT, 'Output exceeds bridge file size limit: ' + relative);
         }
         transactionBytes += (before?.length ?? 0) + (after?.length ?? 0);
         requireThat(transactionBytes <= 64 * 1024 * 1024, 'Patch transaction exceeds 64 MiB. Split the change.');

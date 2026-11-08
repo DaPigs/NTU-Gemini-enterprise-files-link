@@ -2,9 +2,9 @@
 
 Use NTU Gemini Enterprise to edit a project folder on your Windows PC. You describe the changes in chat, and the bridge moves them through your NTU OneDrive.
 
-**Current workflow.** Start the Windows watcher, open a Gemini chat with `/vibecode <ProjectName>`, and ask for a change. If Gemini stops after preparing the patch, select `/syncvibecode` in the same chat or use the [manual upload prompt](#finish-delivery-if-gemini-stops-early). The manual prompt has worked in live testing. First-turn delivery is still unreliable.
+**Current workflow.** Start the Windows watcher, open a Gemini chat with `/vibecode <ProjectName>`, and ask for a change. If Gemini stops after preparing the patch, use `/syncvibecode now` in the same chat or paste the [manual upload prompt](#finish-delivery-if-gemini-stops-early). Delivery after a follow-up has worked in live testing. First-turn delivery is still unreliable.
 
-Each change travels as one data package named `apply-changes.ps1`. The watcher validates the project, snapshot, file hashes, and patch ID before applying it. See [TEST_LOG.md](./TEST_LOG.md) for the live tests and local checks.
+Each change travels as one data package named `apply-changes.ps1`. The watcher checks the project, snapshot, patch ID, and file operations before applying it. Text edits match the current file, and full-file writes use Base64. See [TEST_LOG.md](./TEST_LOG.md) for the live tests and local checks.
 
 **Start with a practice folder.** The watcher applies verified changes under your selected local project. Keep a backup and use files you are allowed to share with Gemini. The browser switch controls approval clicks. The watcher has its own PowerShell window.
 
@@ -61,22 +61,24 @@ If **Skills** or **Upload skill** is missing, use [PROMPT.md](./PROMPT.md) inste
 
    > Create `bridge-test.txt` containing the sentence `Bridge works!`. Keep the other project files as they are. Use OneDrive to deliver the verified delta package.
 
-2. Look for a OneDrive **Upload file** confirmation or an actual upload result. If Gemini only describes the work or prints the patch in chat, select `/syncvibecode` or copy the [manual upload prompt](#finish-delivery-if-gemini-stops-early).
+2. Look for a OneDrive **Upload file** confirmation or an actual upload result. If Gemini prepared a patch but stopped before uploading it, use `/syncvibecode now` or copy the [manual upload prompt](#finish-delivery-if-gemini-stops-early).
 3. When a confirmation appears, check that it uploads **apply-changes.ps1** to the OneDrive folder for your practice project. Click **Send**, or let the [optional browser switch](#optional-browser-switch-and-completion-alerts) approve the card if you have enabled it.
 4. In PowerShell, look for **[PATCH]** with the package ID, **[APPLIED]** for the same ID, and a new **[READY]**. Open **bridge-test.txt** in your **local practice folder** and check the sentence. After a successful apply, the watcher removes the completed upload from OneDrive and publishes a fresh snapshot.
 
 ### Finish delivery if Gemini stops early
 
-Use this when Gemini finishes after preparing a change and no OneDrive upload result or confirmation appears. Compare the reported snapshot ID with the newest **[SNAPSHOT]** line in the watcher window. Check that `apply-changes.ps1` is absent from the project’s OneDrive folder.
+If Gemini prepared `apply-changes.ps1` but stopped before uploading it, select **syncvibecode** in the **same Gemini chat** and type `now` after the skill mention. Send `/syncvibecode now` to upload the existing package immediately. This skips Gemini’s snapshot and upload-slot checks and repackaging. The watcher validates the patch when it arrives.
 
-If the snapshot is still current and the upload slot is clear, type `/` in the **same Gemini chat**, select **syncvibecode**, and send it on its own. It uses the project and change already in that chat.
+Use `/syncvibecode` on its own for verified recovery if Gemini needs to recover the tested files and rebuild the package. If a OneDrive confirmation is already pending, approve that card.
 
 **Manual upload prompt**
 
-If the recovery skill is unavailable, copy this block into the **same chat**.
+To request the same immediate upload without the skill, copy this block into the **same chat**.
 
 ```text
-Finish delivering the change you just tested. Run the Python pack_delta() function from the Vibe Bridge instructions on the tested files and the snapshot used for the change. If that snapshot has changed, report the mismatch so I can restart the change against the latest snapshot. Otherwise, use the exact returned text as Content in Microsoft OneDrive Upload file. Upload to projects/<ProjectName>/apply-changes.ps1, using the exact project name from this chat. Confirm the slot is clear before uploading. Report the actual upload result, pending confirmation, or exact tool error.
+Upload the complete apply-changes.ps1 package you already prepared for the previous change in this chat. Your next action is Microsoft OneDrive Upload file. Use the original project folder at projects/<ProjectName> and the exact prepared text as direct Content. Set FileName to apply-changes.ps1 and set HasBytes to false when available. Use InputFileName: apply-changes.ps1 if required.
+
+Skip the snapshot check, the upload-slot check, file reconstruction, tests, and repackaging. Read the prepared package as-is if it is stored in the workspace. Resolve the project folder ID only if the upload action requires it and the ID is unavailable. If the complete package is unavailable, report that. If this upload already succeeded or is awaiting approval in this chat, report its existing status. Otherwise, call Upload file now and report the actual connector result, pending approval, or exact error.
 ```
 
 Approve the OneDrive card when it appears. Wait for **[APPLIED]** and a fresh **[READY]** before sending another change.
@@ -85,8 +87,8 @@ Approve the OneDrive card when it appears. Wait for **[APPLIED]** and a fresh **
 
 1. Back up your project and review it for secrets or private files before starting the watcher. To exclude files, create `.repomixignore` in the local project folder and list one project-relative path or pattern per line. Use Notepad’s **All files** option when saving. [Repomix’s security guide](https://repomix.com/guide/security)
 2. Double-click [start-vibe-bridge.cmd](./start-vibe-bridge.cmd), select the local folder, and wait for **[READY]** and OneDrive sync. Use distinct folder names for projects and run one watcher per project.
-3. In a new chat, select `/vibecode`, enter that project’s exact folder name, and describe one change. If Gemini stops after preparing it, select `/syncvibecode` or use the [manual upload prompt](#finish-delivery-if-gemini-stops-early) in the same chat. Approve the resulting card and wait for **[APPLIED]** and a fresh **[READY]** before asking for the next change.
-4. After editing files yourself, press **R** in the watcher and wait for the fresh snapshot to sync before asking Gemini for another change. While Gemini is preparing or delivering a patch, let that snapshot stay current. Press **Q** to stop the watcher. If an upload was pending when you stopped, check the OneDrive project folder before restarting.
+3. In a new chat, select `/vibecode`, enter that project’s exact folder name, and describe one change. If Gemini stops after preparing it, use `/syncvibecode now` or the [manual upload prompt](#finish-delivery-if-gemini-stops-early) in the same chat. Approve the resulting card and wait for **[APPLIED]** and a fresh **[READY]** before asking for the next change.
+4. After editing files yourself, press **R** in the watcher and wait for the fresh snapshot to sync before asking Gemini for another change. While Gemini is preparing or delivering a patch, leave the target files alone. A text edit checks its matching section, and a full-file replacement writes the supplied bytes over the current file. Press **Q** to stop the watcher. If an upload was pending when you stopped, check the OneDrive project folder before restarting.
 
 For a manual review before application, turn off auto-approval and stop the watcher with **Q** before you approve the upload. Open the downloaded `apply-changes.ps1` as text in Notepad. Move the reviewed upload out of the inbox before restarting. The watcher publishes a fresh snapshot at startup, so ask Gemini to prepare the patch for that snapshot.
 
@@ -103,21 +105,21 @@ You can use the whole bridge by clicking **Send** yourself. Install this part if
 
 Select **Copy prompt** next to the auto-approve switch, then paste into a new Gemini chat with **Ctrl+V**. Replace the project name on the first line before sending.
 
-The widget shows elapsed time and automatic confirmation clicks for the current turn. Both stay visible after you click back into the page and reset only when you send a new message and Gemini starts that turn. The alert means Gemini finished its chat turn. Check PowerShell for **[APPLIED]** and **[READY]** to confirm local completion. The title flashes once a second when the browser allows it. The browser can delay alerts and title flashing in background tabs. Click inside Gemini to clear the flashing title and checkmark icon.
+The widget shows elapsed time and automatic confirmation clicks for the current turn. Both reset when the widget switches to working for a new Gemini turn and freeze when it shows DONE. Clicking back into the page keeps the finished values visible. The alert means Gemini finished its chat turn. Check PowerShell for **[APPLIED]** and **[READY]** to confirm local completion. The title flashes once a second when the browser allows it. The browser can delay alerts and title flashing in background tabs. Click inside Gemini to clear the flashing title and checkmark icon.
 
 ## Share assets back to Gemini
 
 By default the watcher sends the text snapshot. Share the assets that Gemini needs for your task. For a practice round trip, ask Gemini to create a PNG and WAV before setting up asset sharing.
 
-> Create a valid 16 × 16 PNG at `assets/preview.png` and a small stereo 16-bit PCM WAV at `assets/sample.wav`. Use Python to generate both files. Verify their lengths and SHA-256 hashes, then include both files in a single VibeBridge delta upload. Report both hashes.
+> Create a valid 16 × 16 PNG at `assets/preview.png` and a small stereo 16-bit PCM WAV at `assets/sample.wav`. Use Python to generate both files. Include both files as Base64 in a single VibeBridge delta upload and report their byte lengths.
 
 Use the same [delivery follow-up](#finish-delivery-if-gemini-stops-early) if needed. After **[APPLIED]**, verify that both assets exist in your local project. In File Explorer, open the **local project folder**, type `powershell` in its address bar, and run:
 
 ```powershell
-Get-FileHash -Algorithm SHA256 -LiteralPath .\assets\preview.png, .\assets\sample.wav
+Get-Item -LiteralPath .\assets\preview.png, .\assets\sample.wav | Select-Object Name,Length
 ```
 
-Compare the hashes with Gemini’s reported values. Uppercase and lowercase letters represent the same hash.
+Compare the file lengths with Gemini’s reported values.
 
 To give Gemini access to selected local files, add a text file named `.vibebridge-assets.txt` in your **local project folder**, next to the `assets` folder. In Notepad, choose **All files** when saving so the name has only one `.txt` ending. Put one project-relative file path per line. For the practice project, paste:
 
@@ -142,7 +144,7 @@ assets/
 base64:assets/sample.wav
 ```
 
-After the next refresh and OneDrive sync, the WAV is available as plain Base64 text at `projects/<ProjectName>/asset-bytes/sample.wav.base64.txt`. Subfolders under `assets/` are preserved under `asset-bytes/`. Ask Gemini to download the entire text file and decode it in Python with `base64.b64decode(text.strip(), validate=True)`. It can then read the recovered bytes and compare their SHA-256 hash with the expected hash. The text contains the exact original bytes in an encoded form.
+After the next refresh and OneDrive sync, the WAV is available as plain Base64 text at `projects/<ProjectName>/asset-bytes/sample.wav.base64.txt`. Subfolders under `assets/` are preserved under `asset-bytes/`. Ask Gemini to download the entire text file and decode it in Python with `base64.b64decode(text.strip(), validate=True)`. It can then read the recovered bytes. The text contains the exact original bytes in an encoded form.
 
 Use `base64:` for individual files up to 3 MiB. It creates a separate copy, so reserve it for assets that need this format. If Gemini gets only an excerpt from the connector, try attaching the same text file to the chat directly. To stop sharing a text copy, remove the `base64:` entry and the matching file under `asset-bytes/`.
 
@@ -150,11 +152,11 @@ Use `base64:` for individual files up to 3 MiB. It creates a separate copy, so r
 
 After the watcher prints **[ASSET] Copied to OneDrive folder**, wait for OneDrive to finish syncing. Send the following message in a chat that already has the project selected. Replace `<ProjectName>` with the project name shown by the watcher.
 
-> Download `projects/<ProjectName>/assets/preview.png` and the complete `projects/<ProjectName>/asset-bytes/sample.wav.base64.txt` from OneDrive. In Python, compute the PNG's byte length and SHA-256. Decode the full WAV text with `base64.b64decode(text.strip(), validate=True)` and compute the decoded file's byte length and SHA-256. Report the WAV's channel count, sample rate, and first four stereo sample pairs. Report the computed hashes so I can compare them with my local files. Tell me if either download returned only metadata or an excerpt. Do not upload or modify anything.
+> Download `projects/<ProjectName>/assets/preview.png` and the complete `projects/<ProjectName>/asset-bytes/sample.wav.base64.txt` from OneDrive. In Python, compute the PNG's byte length. Decode the full WAV text with `base64.b64decode(text.strip(), validate=True)` and compute the decoded file's byte length. Report the WAV's channel count, sample rate, and first four stereo sample pairs. Tell me if either download returned only metadata or an excerpt. Do not upload or modify anything.
 
-Run the `Get-FileHash` command at the start of this section to compare both hashes. A matching hash confirms that Gemini recovered the same bytes you have locally.
+Use the `Get-Item` command at the start of this section to compare the reported byte lengths.
 
-**Verified NTU connector test.** In `VibeBridgeIntegrationTest`, Gemini read the 136-byte PNG directly. Its connector rejected the original WAV file type. It downloaded all 87,100 bytes of the Base64 text copy, decoded them to a 65,324-byte WAV with SHA-256 `59f555a6c29e744d55e8019222c09ab5ff4466f09bc0a0f3eac542e9a3876412`, and recovered the expected signed stereo samples for frames 250–253. Your practice hashes will depend on the files generated for your run.
+**Verified NTU connector test.** In `VibeBridgeIntegrationTest`, Gemini read the 136-byte PNG directly. Its connector rejected the original WAV file type. It downloaded all 87,100 bytes of the Base64 text copy, decoded them to a 65,324-byte WAV, and recovered the expected signed stereo samples for frames 250–253.
 
 ## Troubleshooting
 
@@ -166,7 +168,7 @@ Run the `Get-FileHash` command at the start of this section to compare both hash
 | Gemini can read OneDrive but cannot upload | Check that OneDrive write actions are available in your Gemini app. The ability to add or read a file alone does not confirm write access. |
 | Gemini says a `.wav`, `.bin`, or `vibe-payload-…` file is missing from the attachment list | Start a new chat with the updated prompt. The PNG and WAV should be included as Base64 create or replace operations in the one `apply-changes.ps1` upload. |
 | Gemini finds the WAV but says its type is unsupported | Add the Base64 entry, press **R**, wait for OneDrive to sync, and ask for the complete text copy under **asset-bytes**. |
-| Gemini ends the turn after preparing a package | Select `/syncvibecode` or use the [manual upload prompt](#finish-delivery-if-gemini-stops-early) in the same chat while its snapshot is still current. Look for a OneDrive approval or the exact connector error. |
+| Gemini ends the turn after preparing a package | Use `/syncvibecode now` or the [manual upload prompt](#finish-delivery-if-gemini-stops-early) in the same chat. Use `/syncvibecode` on its own if the prepared package needs to be rebuilt. Look for a OneDrive approval or the exact connector error. |
 | Gemini reports an upload and you see no local change | Check the watcher for **[APPLIED]** or a rejection. In File Explorer, check the matching NTU OneDrive project folder for the exact name `apply-changes.ps1`. Verify OneDrive is syncing and the watcher is open for the same project. `apply-changes.ps1.txt` will not trigger it. Enable file extensions under **View → Show → File name extensions** in Windows 11, or the **View** tab in Windows 10. |
 | The watcher rejects a stale snapshot | Press **R** and wait for OneDrive to sync. Copy the ID from the newest **[SNAPSHOT]** line and include `VibeBridge: snapshot <ID>` on its own line in your next change request. Gemini compares the ID with the downloaded snapshot, and the watcher checks the ID again before applying the patch. |
 | The watcher rejects a duplicate patch or executable upload | Press **R**, wait for OneDrive to sync, and ask Gemini to use the updated prompt and fresh snapshot. If the watcher reports an interrupted transaction, inspect the backups and recovery details under **.vibebridge-state/pending** before continuing. |
@@ -194,11 +196,8 @@ Add the three entries from [Share assets back to Gemini](#share-assets-back-to-g
 $oneDriveProject = Read-Host 'Paste the OneDrive Bus folder path'
 $text = [IO.File]::ReadAllText((Join-Path $oneDriveProject 'asset-bytes\sample.wav.base64.txt'))
 $wav = [Convert]::FromBase64String($text)
-$sha = [Security.Cryptography.SHA256]::Create()
-try { $decodedHash = [BitConverter]::ToString($sha.ComputeHash($wav)).Replace('-', '') }
-finally { $sha.Dispose() }
-$originalHash = (Get-FileHash -Algorithm SHA256 -LiteralPath .\assets\sample.wav).Hash
-if ($wav.Length -ne 60 -or $decodedHash -ne $originalHash) { throw 'WAV verification failed.' }
+$original = [IO.File]::ReadAllBytes((Join-Path (Get-Location).ProviderPath 'assets\sample.wav'))
+if ($wav.Length -ne 60 -or [Convert]::ToBase64String($original) -cne $text) { throw 'WAV verification failed.' }
 'Verified: the text copy decodes to the original WAV.'
 ```
 

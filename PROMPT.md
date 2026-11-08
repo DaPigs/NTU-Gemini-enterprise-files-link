@@ -14,33 +14,29 @@ Use the NTU Vibe Bridge for the project named on the first line. Keep that exact
 
 ## Read the current snapshot and assets
 
-Use Microsoft OneDrive to download the complete `projects/<ProjectName>/repo-context.txt` by exact path. Read it again for each change request. It is JSON with format `vibebridge-snapshot-v2`. In the Python tool, parse that exact downloaded file and use the same snapshot object to reconstruct the workspace and generate the patch. Copy the snapshot ID from the parsed object. If the user includes `VibeBridge: snapshot <ID>`, compare it with the downloaded snapshot before editing and pass that ID to `pack_delta` as `expected_snapshot_id`. If they differ, report both IDs and stop before requesting an upload. For editable text, reconstruct and verify the original bytes with `snapshot_bytes(entry)` below. Write those bytes to an isolated workspace before editing. Keep each file's BOM, line endings, and final newline unless the task explicitly changes the final newline. If the snapshot is missing or uses the older format, ask the user to start the updated watcher.
+Use Microsoft OneDrive to download the complete `projects/<ProjectName>/repo-context.txt` by exact path. Read it again for each change request. It is JSON with format `vibebridge-snapshot-v2`. In the Python tool, parse that exact downloaded file and use the same snapshot object to reconstruct the workspace and generate the patch. Copy the snapshot ID from the parsed object. If the user includes `VibeBridge: snapshot <ID>`, compare it with the downloaded snapshot before editing and pass that ID to `pack_delta` as `expected_snapshot_id`. If they differ, report both IDs and stop before requesting an upload. For editable text, reconstruct the original bytes with `snapshot_bytes(entry)` below. Write those bytes to an isolated workspace before editing. Keep each file's BOM, line endings, and final newline unless the task explicitly changes the final newline. If the snapshot is missing or uses the older format, ask the user to start the updated watcher.
 
-For binary bytes, download the actual asset from `projects/<ProjectName>/assets/`. If its file type is unsupported, download the complete `asset-bytes/<path-below-assets>.base64.txt` and decode it with `base64.b64decode(text.strip(), validate=True)`. Compute the length and SHA-256 from the bytes and check any expected values. Report a missing, partial, or mismatched asset before using it.
+For binary bytes, download the actual asset from `projects/<ProjectName>/assets/`. If its file type is unsupported, download the complete `asset-bytes/<path-below-assets>.base64.txt` and decode it with `base64.b64decode(text.strip(), validate=True)`. Check the byte length if the task gives an expected length. Report a missing, partial, or mismatched asset before using it.
 
 ## Deliver the change in the same turn
 
 For a request to change files, the caller with OneDrive write access must complete this sequence before its final reply. At the start, identify the actual OneDrive **Upload file** action and confirm you can call it after Python returns. Use a direct Python execution tool that returns output to you. A coding helper is usable only when its results return to this same caller before any final reply. If no such tool path is available, report which action or handoff is unavailable before spending time preparing an undeliverable package.
 
-1. Edit and test the isolated workspace. Run the exact Python packer below against the downloaded snapshot and the final tested files. Pass the explicit changed paths. This builds and verifies the edit hunks and hashes and emits the watcher format. Let that code produce the JSON.
-2. Check that `projects/<ProjectName>/apply-changes.ps1` is clear. Generate the package once and return the complete ASCII `content` from Python to the OneDrive-capable caller as tool output. If using stdout, put it between separate boundary lines and use exactly the text between them, excluding the boundary lines and the separator newline after the JSON. Record its byte count and `sha(content.encode("ascii"))`. The content starts with `# VibeBridge Delta v2` followed by a newline and a single JSON object. Check for tool output truncation by comparing the complete content length and hash before uploading.
-3. Immediately call Microsoft OneDrive **Upload file** in this turn. Use the exact project folder, `FileName: apply-changes.ps1`, and the complete unchanged package as direct text in `Content`. Set `HasBytes` to false when the action exposes it. If the action requires `InputFileName`, use `apply-changes.ps1` there too. Keep the same patch ID, hash, and content through the approval card. An upload request that requires confirmation is pending until the connector returns success.
-4. Before any final reply, either obtain the actual connector result, surface its pending confirmation, or state the exact blocker and which action could not be called. A package printed in chat does not count as delivery. Report the destination, snapshot ID read from the download, patch ID, byte count, hash, and checks run. After success, the local watcher reports `[PATCH]`, `[APPLIED]`, and a fresh `[READY]`. Wait for the new snapshot before delivering another change.
+1. Edit and test the isolated workspace. Run the exact Python packer below against the downloaded snapshot and the final tested files. Pass the explicit changed paths. Use its output as the patch. It emits exact `edits` for text changes, Base64 file contents for `create` or `replace`, and `confirmDelete: true` for authorized deletions.
+2. Check that `projects/<ProjectName>/apply-changes.ps1` is clear. Generate the package once and return the complete ASCII `content` from Python to the OneDrive-capable caller as tool output. If using stdout, put it between separate boundary lines and use exactly the text between them, excluding the boundary lines and the separator newline after the JSON. Record its byte count. The content starts with `# VibeBridge Delta v2` followed by a newline and a single JSON object. Check for tool output truncation by comparing the complete content length before uploading.
+3. Immediately call Microsoft OneDrive **Upload file** in this turn. Use the exact project folder, `FileName: apply-changes.ps1`, and the complete unchanged package as direct text in `Content`. Set `HasBytes` to false when the action exposes it. If the action requires `InputFileName`, use `apply-changes.ps1` there too. Keep the same patch ID and content through the approval card. An upload request that requires confirmation is pending until the connector returns success.
+4. Before any final reply, either obtain the actual connector result, surface its pending confirmation, or state the exact blocker and which action could not be called. A package printed in chat does not count as delivery. Report the destination, snapshot ID read from the download, patch ID, byte count, and checks run. After success, the local watcher reports `[PATCH]`, `[APPLIED]`, and a fresh `[READY]`. Wait for the new snapshot before delivering another change.
 
 ## Python packer
 
-Copy this code into the direct Python execution tool. Example for an edit: `content = pack_delta(snapshot, workspace, edit=["src/example.py"])`. Pass `create=[...]` only for new files. Pass `replace=[...]` for changed binaries or non-exact snapshot text. For replacement and for deletion of files without exact snapshot bytes, `originals` must point to a separate workspace with the actual original bytes at the same relative paths. Ask for any missing original bytes. Pass `delete=[...]` only for files the user explicitly authorized deleting. Read-only turns stop after answering the question.
+Copy this code into the direct Python execution tool. Example for an edit: `content = pack_delta(snapshot, workspace, edit=["src/example.py"])`. Pass `create=[...]` only for new files. Pass `replace=[...]` for changed binaries or non-exact snapshot text. Pass `delete=[...]` only for files the user explicitly authorized deleting. Read-only turns stop after answering the question.
 
 ```python
 import base64
-import hashlib
 import json
 import uuid
 from difflib import SequenceMatcher
 from pathlib import Path
-
-def sha(data):
-    return hashlib.sha256(data).hexdigest()
 
 def exact_bytes(text, entry):
     if entry["eol"] == "crlf":
@@ -48,12 +44,9 @@ def exact_bytes(text, entry):
     return (("\ufeff" if entry["bom"] else "") + text).encode("utf-8")
 
 def snapshot_bytes(entry):
-    if entry.get("eol") not in ("lf", "crlf") or not entry.get("sha256"):
+    if entry.get("eol") not in ("lf", "crlf"):
         raise ValueError("No exact text bytes in snapshot")
-    data = exact_bytes(entry["text"], entry)
-    if sha(data) != entry["sha256"]:
-        raise ValueError("Snapshot bytes do not match their SHA-256")
-    return data
+    return exact_bytes(entry["text"], entry)
 
 def text_edits(old, new):
     before, after = old.splitlines(keepends=True), new.splitlines(keepends=True)
@@ -92,7 +85,7 @@ def project_file(root, name):
     return file
 
 def pack_delta(snapshot, workspace, *, edit=(), create=(), replace=(), delete=(),
-               originals=None, expected_snapshot_id=None):
+               expected_snapshot_id=None):
     if snapshot["format"] != "vibebridge-snapshot-v2":
         raise ValueError("Expected a v2 snapshot")
     snapshot_id = snapshot["snapshotId"]
@@ -106,7 +99,7 @@ def pack_delta(snapshot, workspace, *, edit=(), create=(), replace=(), delete=()
                 raise ValueError(f"Duplicate operation: {name}")
             seen.add(name.lower())
             entry = snapshot["files"].get(name, {})
-            exact = entry.get("eol") in ("lf", "crlf") and bool(entry.get("sha256"))
+            exact = entry.get("eol") in ("lf", "crlf")
             file = project_file(workspace, name)
             op = {"op": kind, "path": name}
             if kind == "create" and entry:
@@ -115,19 +108,15 @@ def pack_delta(snapshot, workspace, *, edit=(), create=(), replace=(), delete=()
                 raise ValueError(f"Missing exact snapshot text: {name}")
             if kind == "replace" and exact:
                 raise ValueError(f"Use an edit for exact snapshot text: {name}")
-            if kind != "create":
-                base = snapshot_bytes(entry) if exact else project_file(originals, name).read_bytes()
-                op["baseSha256"] = sha(base)
             if kind == "delete":
                 if file.exists():
                     raise ValueError(f"Remove the file from the tested workspace: {name}")
                 op["confirmDelete"] = True
             else:
                 data = file.read_bytes()
-                if kind != "create" and data == base:
-                    continue
-                op["sha256"] = sha(data)
                 if kind == "edit":
+                    if data == snapshot_bytes(entry):
+                        continue
                     text = data.decode("utf-8-sig").replace("\r\n", "\n")
                     if "\r" in text or exact_bytes(text, entry) != data:
                         raise ValueError(f"Restore the original BOM and line endings: {name}")
@@ -149,10 +138,12 @@ def pack_delta(snapshot, workspace, *, edit=(), create=(), replace=(), delete=()
 
 ## Message to paste if Gemini did not attempt delivery
 
-If Gemini finishes preparing a change without an upload result or OneDrive confirmation, check that the snapshot is still current and `apply-changes.ps1` is absent from the project’s OneDrive folder. Copy this block into the **same Gemini chat**. If you imported [SKILL-syncvibecode.md](./SKILL-syncvibecode.md), you can send `/syncvibecode` instead.
+If Gemini prepared `apply-changes.ps1` and stopped before uploading it, copy this block into the **same Gemini chat**. If you imported [SKILL-syncvibecode.md](./SKILL-syncvibecode.md), use `/syncvibecode now` for the same immediate upload. Use `/syncvibecode` on its own for verified recovery when the package needs to be rebuilt.
 
 ```text
-Finish delivering the change you just tested. Run the Python pack_delta() function from the Vibe Bridge instructions on the tested files and the snapshot used for the change. If that snapshot has changed, report the mismatch so I can restart the change against the latest snapshot. Otherwise, use the exact returned text as Content in Microsoft OneDrive Upload file. Upload to projects/<ProjectName>/apply-changes.ps1, using the exact project name from this chat. Confirm the slot is clear before uploading. Report the actual upload result, pending confirmation, or exact tool error.
+Upload the complete apply-changes.ps1 package you already prepared for the previous change in this chat. Your next action is Microsoft OneDrive Upload file. Use the original project folder at projects/<ProjectName> and the exact prepared text as direct Content. Set FileName to apply-changes.ps1 and set HasBytes to false when available. Use InputFileName: apply-changes.ps1 if required.
+
+Skip the snapshot check, the upload-slot check, file reconstruction, tests, and repackaging. Read the prepared package as-is if it is stored in the workspace. Resolve the project folder ID only if the upload action requires it and the ID is unavailable. If the complete package is unavailable, report that. If this upload already succeeded or is awaiting approval in this chat, report its existing status. Otherwise, call Upload file now and report the actual connector result, pending approval, or exact error.
 ```
 
 Approve the OneDrive card when it appears. Wait for **[APPLIED]** and a fresh **[READY]** before requesting the next change.
