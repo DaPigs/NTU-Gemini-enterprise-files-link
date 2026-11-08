@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTU Gemini Enterprise - OneDrive Auto-Approver (iOS Toggle)
 // @namespace    https://github.com/ntu-gemini-vibe-bridge
-// @version      1.10
-// @description  Keep the authorized OneDrive connector on, auto-approve its actions, and show completion alerts in NTU Gemini Enterprise.
+// @version      1.22
+// @description  Keep the authorized OneDrive connector on, auto-approve Gemini confirmation cards, show elapsed time and completion alerts, and copy the project setup prompt in NTU Gemini Enterprise.
 // @author       ntu-gemini-vibe-bridge
 // @match        https://vertexaisearch.cloud.google.com/*
 // @noframes
@@ -22,6 +22,11 @@
     let labelEl = null;
     let switchTrack = null;
     let switchKnob = null;
+    let elapsedEl = null;
+    let approvalCountEl = null;
+    let metrics = null;
+    let telemetryTimer = null;
+    let pendingSubmissionUntil = 0;
 
     let turn = null;
 
@@ -104,16 +109,45 @@
     function setWidgetStatus(mode) {
         if (!labelEl) return;
         if (mode === 'working') {
-            labelEl.textContent = '⚡ working...\nOneDrive';
+            labelEl.textContent = '⚡ working...';
             labelEl.style.color = '#64D2FF';
         } else if (mode === 'done') {
-            labelEl.textContent = '✅ DONE!\nOneDrive';
+            labelEl.textContent = '✅ DONE!';
             labelEl.style.color = '#34C759';
         } else {
-            labelEl.textContent = 'auto-approve\nOneDrive';
+            labelEl.textContent = 'auto-approve\nSend';
             labelEl.style.color = '#F2F2F7';
         }
         keepWidgetOnScreen();
+    }
+
+    function updateTelemetry() {
+        if (!elapsedEl || !approvalCountEl) return;
+        const elapsed = metrics ? Math.max(0, Math.floor(((metrics.endedAt ?? Date.now()) - metrics.startedAt) / 1000)) : 0;
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = String(elapsed % 60).padStart(2, '0');
+        const elapsedText = minutes + 'm' + seconds + 's';
+        const approvals = metrics?.approved ?? 0;
+        elapsedEl.textContent = '⌛: ' + elapsedText;
+        elapsedEl.setAttribute('aria-label', 'Elapsed time: ' + elapsedText);
+        approvalCountEl.textContent = '✅: ' + approvals;
+        approvalCountEl.setAttribute('aria-label', 'Auto-approved confirmations: ' + approvals);
+    }
+
+    function finishTelemetry() {
+        if (metrics?.endedAt !== null) return;
+        metrics.endedAt = Date.now();
+        clearInterval(telemetryTimer);
+        telemetryTimer = null;
+        updateTelemetry();
+    }
+
+    function startTelemetry() {
+        finishTelemetry();
+        metrics = { startedAt: Date.now(), endedAt: null, approved: 0 };
+        if (approvalCountEl) approvalCountEl.title = 'Automatic confirmation clicks in the current turn';
+        telemetryTimer = setInterval(updateTelemetry, 1000);
+        updateTelemetry();
     }
 
     function updateWidgetUI() {
@@ -129,6 +163,48 @@
         }
     }
 
+    function createPromptCopyButton() {
+        const button = document.createElement('button');
+        button.id = 'ge-copy-prompt';
+        button.type = 'button';
+        button.textContent = 'Copy prompt';
+        button.title = 'Copy the project setup prompt to the clipboard';
+        button.setAttribute('aria-live', 'polite');
+        const defaultBackground = 'rgba(255, 255, 255, 0.10)';
+        const defaultColor = '#F2F2F7';
+        Object.assign(button.style, {
+            padding: '8px 10px',
+            minWidth: '86px',
+            border: '1px solid rgba(255, 255, 255, 0.22)',
+            borderRadius: '10px',
+            backgroundColor: defaultBackground,
+            color: defaultColor,
+            fontFamily: 'inherit',
+            fontSize: '11px',
+            fontWeight: '600',
+            cursor: 'pointer'
+        });
+        let resetFeedback;
+        button.addEventListener('click', async () => {
+            let copied = false;
+            try {
+                await navigator.clipboard.writeText(PROJECT_PROMPT);
+                copied = true;
+            } catch {}
+
+            clearTimeout(resetFeedback);
+            button.textContent = copied ? 'Copied!' : 'Copy failed';
+            button.style.backgroundColor = copied ? '#34C759' : defaultBackground;
+            button.style.color = copied ? '#102414' : defaultColor;
+            resetFeedback = setTimeout(() => {
+                button.textContent = 'Copy prompt';
+                button.style.backgroundColor = defaultBackground;
+                button.style.color = defaultColor;
+            }, 2000);
+        });
+        return button;
+    }
+
     function createOrEnsureWidget() {
         if (widget?.isConnected) return;
         const host = document.body;
@@ -141,7 +217,7 @@
 
         widget = document.createElement('div');
         widget.id = 'ge-ios-widget';
-        widget.title = 'Keep OneDrive on and auto-approve its actions • Click or press ` to toggle • Drag to move • Double-click to reset position';
+        widget.title = 'Keep OneDrive on and click Send on Gemini confirmation cards • Click or press ` to toggle • Drag to move • Double-click to reset position';
         Object.assign(widget.style, {
             position: 'fixed',
             boxSizing: 'border-box',
@@ -154,7 +230,7 @@
             right: '24px',
             zIndex: '2147483647',
             display: 'flex',
-            flexDirection: 'column',
+            flexDirection: 'row',
             alignItems: 'center',
             justifyContent: 'center',
             gap: '6px',
@@ -175,7 +251,7 @@
         });
 
         labelEl = document.createElement('div');
-        labelEl.textContent = 'auto-approve\nOneDrive';
+        labelEl.textContent = 'auto-approve\nSend';
         Object.assign(labelEl.style, {
             fontSize: '11px',
             lineHeight: '1.25',
@@ -214,9 +290,35 @@
             pointerEvents: 'none'
         });
 
+        const toggleArea = document.createElement('div');
+        Object.assign(toggleArea.style, {
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '6px'
+        });
         switchTrack.appendChild(switchKnob);
-        widget.appendChild(labelEl);
-        widget.appendChild(switchTrack);
+        toggleArea.append(labelEl, switchTrack);
+        const telemetry = document.createElement('div');
+        Object.assign(telemetry.style, {
+            color: '#F2F2F7', fontSize: '11px', lineHeight: '1.25',
+            fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap'
+        });
+        elapsedEl = document.createElement('div');
+        elapsedEl.setAttribute('role', 'group');
+        elapsedEl.title = 'Elapsed time for this turn';
+        approvalCountEl = document.createElement('div');
+        approvalCountEl.setAttribute('role', 'group');
+        approvalCountEl.title = 'Automatic confirmation clicks in the current turn';
+        telemetry.append(elapsedEl, approvalCountEl);
+        updateTelemetry();
+        const promptCopyButton = createPromptCopyButton();
+        const detailsColumn = document.createElement('div');
+        Object.assign(detailsColumn.style, {
+            display: 'flex', flexDirection: 'column', gap: '5px'
+        });
+        detailsColumn.append(telemetry, promptCopyButton);
+        widget.append(toggleArea, detailsColumn);
 
         // --- Drag vs. Click Logic ---
         let pointerId = null;
@@ -227,7 +329,7 @@
         let initialTop = 0;
 
         widget.addEventListener('pointerdown', (e) => {
-            if (e.button !== 0 || pointerId !== null) return;
+            if (e.button !== 0 || pointerId !== null || promptCopyButton.contains(e.target)) return;
             e.stopPropagation();
 
             pointerId = e.pointerId;
@@ -284,6 +386,7 @@
         widget.addEventListener('lostpointercapture', cancelDrag);
 
         widget.addEventListener('dblclick', (e) => {
+            if (promptCopyButton.contains(e.target)) return;
             e.stopPropagation();
             resetWidgetPosition();
         });
@@ -515,9 +618,10 @@
 
     // 3. Conversation detection. Stop can stay mounted under a hidden shadow host.
     const STOP = 'button[aria-label="Stop"], [data-aria-label="Stop"]';
-    const SUBMIT = 'md-filled-tonal-icon-button.send-button.submit[data-aria-label="Submit"]';
+    const SUBMIT = '[data-aria-label="Submit"], button[aria-label="Submit"]';
+    const COMPOSER = '#agent-search-prosemirror-editor, .ProseMirror[contenteditable="true"]';
     const LIVE_CARD = '.session-request-info-container.live-state';
-    const SEND = 'md-filled-button.send-button[data-aria-label="Send"], md-filled-button.send-button:not([data-aria-label])';
+    const CARD_CONTROLS = 'button, md-filled-button, [role="button"], [data-aria-label="Send"]';
     const STATUS = '[role="status"][aria-live="polite"]';
     const CONNECTOR_MENU = 'md-menu.sources-selector-menu[anchor="sources-selector-menu-anchor"]';
     const ONEDRIVE_SWITCH = 'md-switch.item-toggle[data-aria-label="OneDrive"][data-test-id^="source-toggle-"]';
@@ -562,6 +666,13 @@
         console.debug('[OneDrive Auto-Approver] Stop control', chain);
     }
 
+    function isSendButton(control) {
+        if (!control.matches(CARD_CONTROLS)) return false;
+        const label = (control.getAttribute('data-aria-label') || control.getAttribute('aria-label') ||
+            control.textContent).trim();
+        return label.toLowerCase() === 'send' || (!label && control.matches('md-filled-button.send-button'));
+    }
+
     function isClickable(button) {
         return button.isConnected && !button.disabled && !button.hasAttribute('disabled') &&
             button.getAttribute('aria-disabled') !== 'true' && !visibilityBlocker(button);
@@ -573,6 +684,7 @@
     }
 
     function resetTurn() {
+        finishTelemetry();
         turn = null;
         clearSettleTimer();
         if (!alertActive) setWidgetStatus('idle');
@@ -584,11 +696,50 @@
         if (/\/session\/(?!-\/?$)[^/]+\/?$/.test(sessionPath)) {
             resetTurn();
             waitingForNewTurn = false;
+            pendingSubmissionUntil = 0;
         }
         sessionPath = location.pathname;
     }
 
-    function beginTurn() {
+    function editorText(editor) {
+        const input = editor.matches('[contenteditable]') ? editor :
+            editor.querySelector('[contenteditable]') ?? editor;
+        return input.innerText ?? input.textContent ?? '';
+    }
+
+    function composerText(eventPath = []) {
+        const editor = eventPath.find((node) => node instanceof Element && node.matches(COMPOSER));
+        if (editor) return editorText(editor);
+
+        for (const root of roots.keys()) {
+            for (const candidate of root.querySelectorAll(COMPOSER)) {
+                if (candidate.isConnected && !visibilityBlocker(candidate)) {
+                    const text = editorText(candidate);
+                    if (text.trim()) return text;
+                }
+            }
+        }
+        return '';
+    }
+
+    function captureSubmission(text) {
+        if (!text.trim()) return;
+        checkSession();
+        pendingSubmissionUntil = Date.now() + 30000;
+        waitingForNewTurn = false;
+    }
+
+    function hasUserSubmission() {
+        return Date.now() <= pendingSubmissionUntil;
+    }
+
+    function beginTurn(fromGeneration = false) {
+        if (fromGeneration && hasUserSubmission()) {
+            pendingSubmissionUntil = 0;
+            stopCompletionAlert();
+            resetTurn();
+            startTelemetry();
+        }
         if (!turn) {
             turn = {
                 streams: new Set(),
@@ -605,7 +756,8 @@
     }
 
     function pauseForReview() {
-        const current = beginTurn();
+        if (!turn) return;
+        const current = turn;
         current.hadReview = true;
         current.responseComplete = false;
         current.streamResult = null;
@@ -622,7 +774,7 @@
     function beginStream() {
         checkSession();
         waitingForNewTurn = false;
-        const current = beginTurn();
+        const current = beginTurn(true);
         const revision = current.revision;
         const stream = {};
         current.latestStream = stream;
@@ -792,7 +944,7 @@
         checkSession();
         createOrEnsureWidget();
         const { stop, cards, statuses } = inspectConversation();
-        if (stop && !stopVisible && !waitingForNewTurn) beginTurn().sawStop = true;
+        if (stop && (!stopVisible || hasUserSubmission()) && !waitingForNewTurn) beginTurn(true).sawStop = true;
         stopVisible = stop;
 
         for (const card of cards) {
@@ -804,7 +956,7 @@
 
         if (cards.size) {
             clearSettleTimer();
-            if (isRunning) approveOneDriveCards(cards);
+            if (isRunning) approveConfirmationCards(cards);
             return;
         }
 
@@ -824,6 +976,7 @@
 
         if (allowCompletion) {
             waitingForNewTurn = canIgnoreStaleStop;
+            finishTelemetry();
             turn = null;
             clearSettleTimer();
             startCompletionAlert();
@@ -856,19 +1009,24 @@
         }
     }
 
-    function approveOneDriveCards(cards) {
+    function approveConfirmationCards(cards) {
         for (const card of cards) {
             if (approvedCards.has(card) || !card.matches(LIVE_CARD)) continue;
-            const title = card.querySelector('.title-section .title')?.textContent ?? '';
-            if (!/\bOneDrive\b/i.test(title)) continue;
-            const send = card.querySelector(SEND);
-            if (!send || !isClickable(send)) continue;
-            const button = send.shadowRoot?.querySelector('button') ?? send;
-            if (!isClickable(button)) continue;
 
-            recordApproval(card);
-            button.click();
-            console.log('[OneDrive Auto-Approver] OneDrive action approved');
+            for (const send of card.querySelectorAll(CARD_CONTROLS)) {
+                if (send.closest(LIVE_CARD) !== card || !isSendButton(send) || !isClickable(send)) continue;
+                const button = send.shadowRoot?.querySelector('button') ?? send;
+                if (!isClickable(button)) continue;
+
+                beginTurn(true);
+                if (!metrics) startTelemetry();
+                recordApproval(card);
+                button.click();
+                metrics.approved++;
+                updateTelemetry();
+                console.log('[OneDrive Auto-Approver] Automatic confirmation sent');
+                break;
+            }
         }
     }
 
@@ -877,11 +1035,9 @@
         const path = event.composedPath().filter((node) => node instanceof Element);
         if (path.some((node) => node.matches(STOP))) {
             resetTurn();
-        } else if (path.some((node) => node.matches(SUBMIT))) {
-            checkSession();
-            waitingForNewTurn = false;
-            resetTurn();
-        } else if (path.some((node) => node.matches(SEND))) {
+        } else if (path.some((node) => node.matches(SUBMIT)) && !path.some((node) => node.matches(LIVE_CARD))) {
+            captureSubmission(composerText(path));
+        } else if (path.some(isSendButton)) {
             const card = path.find((node) => node.matches(LIVE_CARD));
             if (card) recordApproval(card);
         }
@@ -890,8 +1046,9 @@
     window.addEventListener('keydown', (event) => {
         if (!event.isTrusted || event.key !== 'Enter' || event.isComposing ||
             event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
-        if (event.composedPath().some((node) => node.id === 'agent-search-prosemirror-editor')) {
-            waitingForNewTurn = false;
+        const path = event.composedPath();
+        if (path.some((node) => node instanceof Element && node.matches(COMPOSER))) {
+            captureSubmission(composerText(path));
         }
     }, true);
 
@@ -958,10 +1115,155 @@
         return root;
     };
 
+    // Snapshot of PROMPT.md’s "Message to paste" block for the standalone userscript.
+    // Refresh this block when the prompt changes.
+    const PROJECT_PROMPT = [
+        "Project name: <ProjectName>",
+        "",
+        "Use the NTU Vibe Bridge for the project named on the first line. Keep that exact folder name throughout this chat. If this message only sets up the project, read the snapshot and confirm what you found. A requested file change includes delivering the validated delta to OneDrive in that same turn. Questions, reviews, and drafts are read-only.",
+        "",
+        "## Read the current snapshot and assets",
+        "",
+        "Use Microsoft OneDrive to download the complete `projects/<ProjectName>/repo-context.txt` by exact path. Read it again for each change request. It is JSON with format `vibebridge-snapshot-v2`. In the Python tool, parse that exact downloaded file and use the same snapshot object to reconstruct the workspace and generate the patch. Copy the snapshot ID from the parsed object. If the user includes `VibeBridge: snapshot <ID>`, compare it with the downloaded snapshot before editing and pass that ID to `pack_delta` as `expected_snapshot_id`. If they differ, report both IDs and stop before requesting an upload. For editable text, reconstruct and verify the original bytes with `snapshot_bytes(entry)` below. Write those bytes to an isolated workspace before editing. Keep each file's BOM, line endings, and final newline unless the task explicitly changes the final newline. If the snapshot is missing or uses the older format, ask the user to start the updated watcher.",
+        "",
+        "For binary bytes, download the actual asset from `projects/<ProjectName>/assets/`. If its file type is unsupported, download the complete `asset-bytes/<path-below-assets>.base64.txt` and decode it with `base64.b64decode(text.strip(), validate=True)`. Compute the length and SHA-256 from the bytes and check any expected values. Report a missing, partial, or mismatched asset before using it.",
+        "",
+        "## Deliver the change in the same turn",
+        "",
+        "For a request to change files, the caller with OneDrive write access must complete this sequence before its final reply. At the start, identify the actual OneDrive **Upload file** action and confirm you can call it after Python returns. Use a direct Python execution tool that returns output to you. A coding helper is usable only when its results return to this same caller before any final reply. If no such tool path is available, report which action or handoff is unavailable before spending time preparing an undeliverable package.",
+        "",
+        "1. Edit and test the isolated workspace. Run the exact Python packer below against the downloaded snapshot and the final tested files. Pass the explicit changed paths. This builds and verifies the edit hunks and hashes and emits the watcher format. Let that code produce the JSON.",
+        "2. Check that `projects/<ProjectName>/apply-changes.ps1` is clear. Generate the package once and return the complete ASCII `content` from Python to the OneDrive-capable caller as tool output. If using stdout, put it between separate boundary lines and use exactly the text between them, excluding the boundary lines and the separator newline after the JSON. Record its byte count and `sha(content.encode(\"ascii\"))`. The content starts with `# VibeBridge Delta v2` followed by a newline and a single JSON object. Check for tool output truncation by comparing the complete content length and hash before uploading.",
+        "3. Immediately call Microsoft OneDrive **Upload file** in this turn. Use the exact project folder, `FileName: apply-changes.ps1`, and the complete unchanged package as direct text in `Content`. Set `HasBytes` to false when the action exposes it. If the action requires `InputFileName`, use `apply-changes.ps1` there too. Keep the same patch ID, hash, and content through the approval card. An upload request that requires confirmation is pending until the connector returns success.",
+        "4. Before any final reply, either obtain the actual connector result, surface its pending confirmation, or state the exact blocker and which action could not be called. A package printed in chat does not count as delivery. Report the destination, snapshot ID read from the download, patch ID, byte count, hash, and checks run. After success, the local watcher reports `[PATCH]`, `[APPLIED]`, and a fresh `[READY]`. Wait for the new snapshot before delivering another change.",
+        "",
+        "## Python packer",
+        "",
+        "Copy this code into the direct Python execution tool. Example for an edit: `content = pack_delta(snapshot, workspace, edit=[\"src/example.py\"])`. Pass `create=[...]` only for new files. Pass `replace=[...]` for changed binaries or non-exact snapshot text. For replacement and for deletion of files without exact snapshot bytes, `originals` must point to a separate workspace with the actual original bytes at the same relative paths. Ask for any missing original bytes. Pass `delete=[...]` only for files the user explicitly authorized deleting. Read-only turns stop after answering the question.",
+        "",
+        "```python",
+        "import base64",
+        "import hashlib",
+        "import json",
+        "import uuid",
+        "from difflib import SequenceMatcher",
+        "from pathlib import Path",
+        "",
+        "def sha(data):",
+        "    return hashlib.sha256(data).hexdigest()",
+        "",
+        "def exact_bytes(text, entry):",
+        "    if entry[\"eol\"] == \"crlf\":",
+        "        text = text.replace(\"\\n\", \"\\r\\n\")",
+        "    return ((\"\\ufeff\" if entry[\"bom\"] else \"\") + text).encode(\"utf-8\")",
+        "",
+        "def snapshot_bytes(entry):",
+        "    if entry.get(\"eol\") not in (\"lf\", \"crlf\") or not entry.get(\"sha256\"):",
+        "        raise ValueError(\"No exact text bytes in snapshot\")",
+        "    data = exact_bytes(entry[\"text\"], entry)",
+        "    if sha(data) != entry[\"sha256\"]:",
+        "        raise ValueError(\"Snapshot bytes do not match their SHA-256\")",
+        "    return data",
+        "",
+        "def text_edits(old, new):",
+        "    before, after = old.splitlines(keepends=True), new.splitlines(keepends=True)",
+        "    matcher = SequenceMatcher(None, before, after)",
+        "    for context in (1, 3, 8, 24):",
+        "        pairs = []",
+        "        for group in matcher.get_grouped_opcodes(context):",
+        "            start, end = group[0], group[-1]",
+        "            a = \"\".join(before[start[1]:end[2]])",
+        "            b = \"\".join(after[start[3]:end[4]])",
+        "            pairs.append((a, b))",
+        "        if all(a and old.find(a, old.index(a) + 1) == -1 for a, _ in pairs):",
+        "            break",
+        "    else:",
+        "        pairs = [(old, new)]",
+        "    cursor, rebuilt = 0, []",
+        "    for a, b in pairs:",
+        "        start = old.index(a)",
+        "        if start < cursor:",
+        "            raise ValueError(\"Overlapping edits\")",
+        "        rebuilt.extend((old[cursor:start], b))",
+        "        cursor = start + len(a)",
+        "    if \"\".join(rebuilt) + old[cursor:] != new:",
+        "        raise ValueError(\"Edits do not reproduce the tested text\")",
+        "    return [{\"before\": a, \"after\": b} for a, b in pairs]",
+        "",
+        "def project_file(root, name):",
+        "    if root is None or \"\\\\\" in name or \":\" in name or any(",
+        "        part in (\"\", \".\", \"..\") for part in name.split(\"/\")",
+        "    ):",
+        "        raise ValueError(f\"Expected a project-relative file path: {name}\")",
+        "    root = Path(root).resolve()",
+        "    file = (root / name).resolve()",
+        "    if not file.is_relative_to(root):",
+        "        raise ValueError(f\"File escapes the workspace: {name}\")",
+        "    return file",
+        "",
+        "def pack_delta(snapshot, workspace, *, edit=(), create=(), replace=(), delete=(),",
+        "               originals=None, expected_snapshot_id=None):",
+        "    if snapshot[\"format\"] != \"vibebridge-snapshot-v2\":",
+        "        raise ValueError(\"Expected a v2 snapshot\")",
+        "    snapshot_id = snapshot[\"snapshotId\"]",
+        "    if expected_snapshot_id is not None and snapshot_id != expected_snapshot_id:",
+        "        raise ValueError(f\"Downloaded snapshot {snapshot_id} differs from expected {expected_snapshot_id}\")",
+        "    operations, seen = [], set()",
+        "    for kind, paths in ((\"edit\", edit), (\"create\", create),",
+        "                        (\"replace\", replace), (\"delete\", delete)):",
+        "        for name in paths:",
+        "            if name.lower() in seen:",
+        "                raise ValueError(f\"Duplicate operation: {name}\")",
+        "            seen.add(name.lower())",
+        "            entry = snapshot[\"files\"].get(name, {})",
+        "            exact = entry.get(\"eol\") in (\"lf\", \"crlf\") and bool(entry.get(\"sha256\"))",
+        "            file = project_file(workspace, name)",
+        "            op = {\"op\": kind, \"path\": name}",
+        "            if kind == \"create\" and entry:",
+        "                raise ValueError(f\"Create would overwrite a snapshot file: {name}\")",
+        "            if kind == \"edit\" and not exact:",
+        "                raise ValueError(f\"Missing exact snapshot text: {name}\")",
+        "            if kind == \"replace\" and exact:",
+        "                raise ValueError(f\"Use an edit for exact snapshot text: {name}\")",
+        "            if kind != \"create\":",
+        "                base = snapshot_bytes(entry) if exact else project_file(originals, name).read_bytes()",
+        "                op[\"baseSha256\"] = sha(base)",
+        "            if kind == \"delete\":",
+        "                if file.exists():",
+        "                    raise ValueError(f\"Remove the file from the tested workspace: {name}\")",
+        "                op[\"confirmDelete\"] = True",
+        "            else:",
+        "                data = file.read_bytes()",
+        "                if kind != \"create\" and data == base:",
+        "                    continue",
+        "                op[\"sha256\"] = sha(data)",
+        "                if kind == \"edit\":",
+        "                    text = data.decode(\"utf-8-sig\").replace(\"\\r\\n\", \"\\n\")",
+        "                    if \"\\r\" in text or exact_bytes(text, entry) != data:",
+        "                        raise ValueError(f\"Restore the original BOM and line endings: {name}\")",
+        "                    op[\"edits\"] = text_edits(entry[\"text\"], text)",
+        "                else:",
+        "                    op[\"base64\"] = base64.b64encode(data).decode(\"ascii\")",
+        "            operations.append(op)",
+        "    if not 1 <= len(operations) <= 200:",
+        "        raise ValueError(\"Expected 1 to 200 changed files\")",
+        "    package = {\"version\": 2, \"project\": snapshot[\"project\"],",
+        "               \"snapshotId\": snapshot_id, \"patchId\": str(uuid.uuid4()),",
+        "               \"operations\": operations}",
+        "    content = \"# VibeBridge Delta v2\\n\" + json.dumps(package, ensure_ascii=True, separators=(\",\", \":\"))",
+        "    if len(content) > 7_000_000:",
+        "        raise ValueError(\"Delta exceeds the 7,000,000-byte bridge budget\")",
+        "    return content",
+        "```",
+    ].join('\n');
+
     observeChatTransport();
     observeRoot(document);
     document.addEventListener('DOMContentLoaded', scheduleScan, { once: true });
-    document.addEventListener('visibilitychange', scheduleScan);
+    document.addEventListener('visibilitychange', () => {
+        updateTelemetry();
+        scheduleScan();
+    });
     window.addEventListener('popstate', scheduleScan);
     scheduleScan();
 

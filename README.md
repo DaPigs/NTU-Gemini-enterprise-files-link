@@ -1,15 +1,19 @@
-# NTU Gemini enterprise files link
+# NTU Gemini Files link
 
 Use NTU Gemini Enterprise to edit a project folder on your Windows PC. You describe the changes in chat, and the bridge moves them through your NTU OneDrive.
 
-**Start with the practice folder in this guide.** The PowerShell window that runs the bridge is called the *watcher*. While it is running, it automatically runs any file named `apply-changes.ps1` that arrives in the matching OneDrive folder. That file runs with your Windows account's permissions and can edit or delete files. Keep the OneDrive folder private, keep a backup of any real project, and use the bridge only with files you are allowed to share with NTU Gemini. The browser switch controls upload approvals. Turning it off still leaves the watcher running.
+**Current workflow.** Start the Windows watcher, open a Gemini chat with `/vibecode <ProjectName>`, and ask for a change. If Gemini stops after preparing the patch, select `/syncvibecode` in the same chat or use the [manual upload prompt](#finish-delivery-if-gemini-stops-early). The manual prompt has worked in live testing. First-turn delivery is still unreliable.
+
+Each change travels as one data package named `apply-changes.ps1`. The watcher validates the project, snapshot, file hashes, and patch ID before applying it. See [TEST_LOG.md](./TEST_LOG.md) for the live tests and local checks.
+
+**Start with a practice folder.** The watcher applies verified changes under your selected local project. Keep a backup and use files you are allowed to share with Gemini. The browser switch controls approval clicks. The watcher has its own PowerShell window.
 
 ## 1. Get the project files
 
 You need Windows 10 or 11, the OneDrive desktop app signed in to your NTU account, and access to [NTU Gemini Enterprise](https://vertexaisearch.cloud.google.com/) with Microsoft OneDrive read and write actions. Use Chrome or Edge if you want the optional browser switch and completion alerts.
 
 1. If you are viewing the project on GitHub, choose **Code → Download ZIP**. In **Downloads**, right-click the ZIP and choose **Extract All… → Extract**. If someone gave you the project folder directly, open that folder in File Explorer.
-2. Open the folder that contains [setup.ps1](./setup.ps1), [vibe-sync.ps1](./vibe-sync.ps1), and [start-vibe-bridge.cmd](./start-vibe-bridge.cmd). Keep the project files together.
+2. Open the folder that contains [setup.ps1](./setup.ps1), [vibe-sync.ps1](./vibe-sync.ps1), [bridge-delta.cjs](./bridge-delta.cjs), and [start-vibe-bridge.cmd](./start-vibe-bridge.cmd). Keep the project files together.
 3. In File Explorer, click the address bar at the top, type `powershell`, and press **Enter**. A PowerShell window opens in that folder. Paste commands into that window with **Ctrl+V**, then press **Enter**. Use your regular Windows account for these steps.
 
 ## 2. Install the tools that prepare your files
@@ -41,37 +45,116 @@ The setup installs or checks **Node.js**, which runs the file-packing tool, and 
 
 > **Two folders to remember.** Gemini reads and writes inside **NTU OneDrive → projects → VibeBridgePractice**. Your actual project files, including **hello.txt**, are in the **local practice folder**. Use the same project name in both places if you added a number.
 
-## 5. Test a change from Gemini
+## 5. Import the Gemini skill and start a chat
 
-1. Open [PROMPT.md](./PROMPT.md). Copy the entire block under **Message to paste** into a new Gemini chat. On the first line, replace `<ProjectName>` with your practice folder’s name, then send the message. Gemini should read `repo-context.txt` and report the sentence in **hello.txt**. If it cannot find the file, wait for OneDrive to finish syncing and check the folder name and Microsoft account before continuing.
-2. Send this next message. Leave browser auto-approval off if you have already installed it.
+1. In Gemini Enterprise, open **Skills** in the left menu. Use **+ → Upload skill → Import** to import [SKILL-vibecode.md](./SKILL-vibecode.md) for `/vibecode` and [SKILL-syncvibecode.md](./SKILL-syncvibecode.md) for `/syncvibecode` separately. If the importer requires the standard filename, copy each file to a separate folder and name each copy `SKILL.md`. [Google’s skill guide](https://docs.cloud.google.com/gemini/enterprise/docs/skills#upload_a_skill_to_the_web_app)
+2. Open a regular **New chat**. Type `/` in the message box and choose **vibecode** from the skill menu. After the skill mention, type the exact **Project Name** shown by the watcher. For the practice folder, the first line should look like `/vibecode VibeBridgePractice`. Add your request on the next line.
+3. Send the skill and project name with this request on the next line. A matching sentence confirms Gemini can read the snapshot.
 
-> In this practice project, create one local file named bridge-test.txt containing Bridge works! Use the apply-changes.ps1 upload workflow we agreed on. Make no other changes.
+   > Read `repo-context.txt` from this project’s OneDrive folder and quote the sentence in `hello.txt`.
 
-3. If Gemini shows a OneDrive confirmation, check that the action uploads **apply-changes.ps1** to **projects → VibeBridgePractice**. Select **Send** if it matches the practice request. The watcher will run the script when it arrives.
-4. Check PowerShell for **Executing AI patch** and a new **[READY]** message. Open **bridge-test.txt** in the **local practice folder**. If it says **Bridge works!**, the round trip succeeded. The watcher removes the upload from OneDrive after it runs successfully.
+If **Skills** or **Upload skill** is missing, use [PROMPT.md](./PROMPT.md) instead. Paste its **Message to paste** block into a fresh chat and replace the project name on the first line. The optional browser widget’s **Copy prompt** button copies that same message. To update an imported skill, open it under **Skills**, choose **⋮ → Edit**, paste the Markdown instructions from the matching skill file below its YAML header, and save. [Google’s instructions for updating a skill](https://docs.cloud.google.com/gemini/enterprise/docs/skills#update_a_skill)
 
-## 6. Optional browser switch and completion alerts
+## 6. Send a practice change and confirm it applied
 
-You can use the whole bridge by clicking **Send** yourself. Install this part if you want Gemini completion alerts or automatic approval of OneDrive confirmation cards.
+1. In the chat from step 5, send this change request. Leave the browser switch off for the first practice run so you can see the OneDrive confirmation.
+
+   > Create `bridge-test.txt` containing the sentence `Bridge works!`. Keep the other project files as they are. Use OneDrive to deliver the verified delta package.
+
+2. Look for a OneDrive **Upload file** confirmation or an actual upload result. If Gemini only describes the work or prints the patch in chat, select `/syncvibecode` or copy the [manual upload prompt](#finish-delivery-if-gemini-stops-early).
+3. When a confirmation appears, check that it uploads **apply-changes.ps1** to the OneDrive folder for your practice project. Click **Send**, or let the [optional browser switch](#optional-browser-switch-and-completion-alerts) approve the card if you have enabled it.
+4. In PowerShell, look for **[PATCH]** with the package ID, **[APPLIED]** for the same ID, and a new **[READY]**. Open **bridge-test.txt** in your **local practice folder** and check the sentence. After a successful apply, the watcher removes the completed upload from OneDrive and publishes a fresh snapshot.
+
+### Finish delivery if Gemini stops early
+
+Use this when Gemini finishes after preparing a change and no OneDrive upload result or confirmation appears. Compare the reported snapshot ID with the newest **[SNAPSHOT]** line in the watcher window. Check that `apply-changes.ps1` is absent from the project’s OneDrive folder.
+
+If the snapshot is still current and the upload slot is clear, type `/` in the **same Gemini chat**, select **syncvibecode**, and send it on its own. It uses the project and change already in that chat.
+
+**Manual upload prompt**
+
+If the recovery skill is unavailable, copy this block into the **same chat**.
+
+```text
+Finish delivering the change you just tested. Run the Python pack_delta() function from the Vibe Bridge instructions on the tested files and the snapshot used for the change. If that snapshot has changed, report the mismatch so I can restart the change against the latest snapshot. Otherwise, use the exact returned text as Content in Microsoft OneDrive Upload file. Upload to projects/<ProjectName>/apply-changes.ps1, using the exact project name from this chat. Confirm the slot is clear before uploading. Report the actual upload result, pending confirmation, or exact tool error.
+```
+
+Approve the OneDrive card when it appears. Wait for **[APPLIED]** and a fresh **[READY]** before sending another change.
+
+## Everyday use
+
+1. Back up your project and review it for secrets or private files before starting the watcher. To exclude files, create `.repomixignore` in the local project folder and list one project-relative path or pattern per line. Use Notepad’s **All files** option when saving. [Repomix’s security guide](https://repomix.com/guide/security)
+2. Double-click [start-vibe-bridge.cmd](./start-vibe-bridge.cmd), select the local folder, and wait for **[READY]** and OneDrive sync. Use distinct folder names for projects and run one watcher per project.
+3. In a new chat, select `/vibecode`, enter that project’s exact folder name, and describe one change. If Gemini stops after preparing it, select `/syncvibecode` or use the [manual upload prompt](#finish-delivery-if-gemini-stops-early) in the same chat. Approve the resulting card and wait for **[APPLIED]** and a fresh **[READY]** before asking for the next change.
+4. After editing files yourself, press **R** in the watcher and wait for the fresh snapshot to sync before asking Gemini for another change. While Gemini is preparing or delivering a patch, let that snapshot stay current. Press **Q** to stop the watcher. If an upload was pending when you stopped, check the OneDrive project folder before restarting.
+
+For a manual review before application, turn off auto-approval and stop the watcher with **Q** before you approve the upload. Open the downloaded `apply-changes.ps1` as text in Notepad. Move the reviewed upload out of the inbox before restarting. The watcher publishes a fresh snapshot at startup, so ask Gemini to prepare the patch for that snapshot.
+
+When upgrading from an older bridge version, close the old watcher and start the new one. Update the imported skill or use the current prompt, then start a fresh chat. The current watcher reads Delta v2 data from `apply-changes.ps1` and rejects older executable packages.
+
+## Optional browser switch and completion alerts
+
+You can use the whole bridge by clicking **Send** yourself. Install this part if you want Gemini completion alerts or automatic approval of Gemini confirmation cards.
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) for Chrome or Edge. In Chrome, open `chrome://extensions` in the address bar, choose **Details** on the Tampermonkey card, and enable **Allow User Scripts** if shown. In Edge, open `edge://extensions` and follow Tampermonkey’s browser-specific steps if the toggle is absent. [Tampermonkey permissions guide](https://www.tampermonkey.net/faq.php#Q209)
 2. In File Explorer, right-click **ntu-gemini-auto-approve.user.js** and choose **Open with → Notepad**. Press **Ctrl+A**, then **Ctrl+C** to copy the entire file. If Windows hides extensions, look for **ntu-gemini-auto-approve.user** with type **JavaScript File**.
 3. Click the Tampermonkey icon in the browser’s **Extensions** menu. Choose **Create a new script…**. Click inside the editor, press **Ctrl+A**, then **Ctrl+V** to replace the example text, and press **Ctrl+S**. If an older copy is already installed, replace its contents from the Tampermonkey dashboard and leave only one enabled copy.
-4. Refresh the Gemini tab. The **auto-approve OneDrive** switch appears near the bottom-right and starts off. Drag it to move it. When green, it turns the already-authorized OneDrive connector back on if Gemini switches it off and clicks **Send** for OneDrive actions in that tab. Turn the widget off before intentionally switching OneDrive off in Gemini. When it turns green, your browser may ask whether to allow desktop notifications. If you want notifications with approval off, allow notifications in the Gemini site settings or turn the switch back off after granting permission.
+4. Refresh the Gemini tab. The **auto-approve Send** switch appears near the bottom-right and starts off. Drag it to move it. When green, it keeps the authorized OneDrive connector enabled and clicks **Send** once on each enabled Gemini confirmation card, including cards already open. The switch applies to every connector and destination. Turn it off to review confirmations yourself. Turn the widget off before intentionally switching OneDrive off in Gemini. When it turns green, your browser may ask whether to allow desktop notifications. If you want notifications with approval off, allow notifications in the Gemini site settings or turn the switch back off after granting permission.
 
-The alert means Gemini finished its chat turn. Check PowerShell to confirm the local changes finished syncing and applying. The title flashes once a second when the browser allows it. The browser can delay alerts and title flashing in background tabs. Click inside Gemini to clear the flashing title and checkmark icon.
+Select **Copy prompt** next to the auto-approve switch, then paste into a new Gemini chat with **Ctrl+V**. Replace the project name on the first line before sending.
 
-## Everyday use
+The widget shows elapsed time and automatic confirmation clicks for the current turn. Both stay visible after you click back into the page and reset only when you send a new message and Gemini starts that turn. The alert means Gemini finished its chat turn. Check PowerShell for **[APPLIED]** and **[READY]** to confirm local completion. The title flashes once a second when the browser allows it. The browser can delay alerts and title flashing in background tabs. Click inside Gemini to clear the flashing title and checkmark icon.
 
-1. Make a backup of your real project. The watcher copies a snapshot to OneDrive as soon as it starts, so check your project for passwords, access keys, and private data first. Repomix skips common build folders and looks for some secrets. To exclude specific files or folders, create a text file named **.repomixignore** in your project folder. Use Notepad’s **All files** option to save that exact name. Put one name or path per line, starting from the project folder, such as `.env` or `data/private/`. [Repomix’s security guide](https://repomix.com/guide/security)
-2. Double-click **start-vibe-bridge.cmd** and paste your real project’s full folder path. For example, `C:\Users\User\Desktop\python\school\vibecodetest` uses `C:\Users\User\OneDrive - Nanyang Technological University\projects\vibecodetest` for its snapshot and uploads. Use a distinct folder name for each project and run one watcher per project.
-3. Check the generated `repo-context.txt` before sharing it with Gemini. Start a new chat with [PROMPT.md](./PROMPT.md) and the real project name. Ask for one change at a time and wait for the next **[READY]** before asking for another.
-4. If you edit files yourself, click the PowerShell window and press **R** to refresh `repo-context.txt` before asking Gemini to read it again. Press **Q** in that window to stop the watcher. If you quit while an upload is pending, check the OneDrive project folder for that upload before restarting.
+## Share assets back to Gemini
 
-To review a generated script **before it can run**, leave auto-approval off and press **Q** in the watcher before approving the upload. When `apply-changes.ps1` syncs to OneDrive, open it **with Notepad** and have someone you trust review it if needed. Start the watcher again only after accepting the script. To reject it, move it out of the watched folder and let OneDrive finish syncing before you restart.
+By default the watcher sends the text snapshot. Share the assets that Gemini needs for your task. For a practice round trip, ask Gemini to create a PNG and WAV before setting up asset sharing.
 
-If you ran an older watcher, press **Q** to stop it and start the updated script with the same local project path. It creates a fresh snapshot under `projects\<ProjectName>`. Start a new Gemini chat with the updated [PROMPT.md](./PROMPT.md) so future uploads go to that folder.
+> Create a valid 16 × 16 PNG at `assets/preview.png` and a small stereo 16-bit PCM WAV at `assets/sample.wav`. Use Python to generate both files. Verify their lengths and SHA-256 hashes, then include both files in a single VibeBridge delta upload. Report both hashes.
+
+Use the same [delivery follow-up](#finish-delivery-if-gemini-stops-early) if needed. After **[APPLIED]**, verify that both assets exist in your local project. In File Explorer, open the **local project folder**, type `powershell` in its address bar, and run:
+
+```powershell
+Get-FileHash -Algorithm SHA256 -LiteralPath .\assets\preview.png, .\assets\sample.wav
+```
+
+Compare the hashes with Gemini’s reported values. Uppercase and lowercase letters represent the same hash.
+
+To give Gemini access to selected local files, add a text file named `.vibebridge-assets.txt` in your **local project folder**, next to the `assets` folder. In Notepad, choose **All files** when saving so the name has only one `.txt` ending. Put one project-relative file path per line. For the practice project, paste:
+
+```
+assets/preview.png
+assets/sample.wav
+base64:assets/sample.wav
+```
+
+For a few files, use exact filenames under `assets/`. To share a whole folder and its subfolders, use one line ending in a slash, such as `assets/icons/`. Use `assets/` to share the whole tree. A folder entry includes newly added files on the next refresh. Folder entries skip hidden files and links. List only files or folders you want copied into your NTU OneDrive. The watcher checks the list at startup, when you press **R**, and after it applies a patch. It copies changed files to the corresponding `projects/<ProjectName>/assets/` path, keeping their original extensions and bytes. If you change a copy in OneDrive, a later refresh uses the local project file as the source of truth.
+
+Press **R** to publish the selected files. After the watcher prints **[ASSET] Copied to OneDrive folder**, wait for OneDrive to finish syncing. Then ask Gemini to download the asset by its full OneDrive path and report whether it received the file bytes. A successful lookup only confirms that the file exists. The connector may still limit which files it can open or pass to Python.
+
+To stop sharing an asset, remove the line that selects it, or narrow the folder entry in `.vibebridge-assets.txt`, then remove the OneDrive copy. The watcher reports missing local files so you can check for older copies in OneDrive.
+
+### When Gemini says an asset type is unsupported
+
+Keep the original file and add a second entry to `.vibebridge-assets.txt` that starts with `base64:`. For example:
+
+```
+assets/
+base64:assets/sample.wav
+```
+
+After the next refresh and OneDrive sync, the WAV is available as plain Base64 text at `projects/<ProjectName>/asset-bytes/sample.wav.base64.txt`. Subfolders under `assets/` are preserved under `asset-bytes/`. Ask Gemini to download the entire text file and decode it in Python with `base64.b64decode(text.strip(), validate=True)`. It can then read the recovered bytes and compare their SHA-256 hash with the expected hash. The text contains the exact original bytes in an encoded form.
+
+Use `base64:` for individual files up to 3 MiB. It creates a separate copy, so reserve it for assets that need this format. If Gemini gets only an excerpt from the connector, try attaching the same text file to the chat directly. To stop sharing a text copy, remove the `base64:` entry and the matching file under `asset-bytes/`.
+
+### Test a read back in Gemini
+
+After the watcher prints **[ASSET] Copied to OneDrive folder**, wait for OneDrive to finish syncing. Send the following message in a chat that already has the project selected. Replace `<ProjectName>` with the project name shown by the watcher.
+
+> Download `projects/<ProjectName>/assets/preview.png` and the complete `projects/<ProjectName>/asset-bytes/sample.wav.base64.txt` from OneDrive. In Python, compute the PNG's byte length and SHA-256. Decode the full WAV text with `base64.b64decode(text.strip(), validate=True)` and compute the decoded file's byte length and SHA-256. Report the WAV's channel count, sample rate, and first four stereo sample pairs. Report the computed hashes so I can compare them with my local files. Tell me if either download returned only metadata or an excerpt. Do not upload or modify anything.
+
+Run the `Get-FileHash` command at the start of this section to compare both hashes. A matching hash confirms that Gemini recovered the same bytes you have locally.
+
+**Verified NTU connector test.** In `VibeBridgeIntegrationTest`, Gemini read the 136-byte PNG directly. Its connector rejected the original WAV file type. It downloaded all 87,100 bytes of the Base64 text copy, decoded them to a 65,324-byte WAV with SHA-256 `59f555a6c29e744d55e8019222c09ab5ff4466f09bc0a0f3eac542e9a3876412`, and recovered the expected signed stereo samples for frames 250–253. Your practice hashes will depend on the files generated for your run.
 
 ## Troubleshooting
 
@@ -81,8 +164,12 @@ If you ran an older watcher, press **Q** to stop it and start the updated script
 | The launcher says it cannot find `vibe-sync.ps1` | Open the extracted folder in File Explorer and double-click the launcher there. Keep `start-vibe-bridge.cmd` and `vibe-sync.ps1` together. |
 | **OneDrive Root** shows the wrong account | Press **Q** if the watcher is running. Restart with the command below, replacing the example path with the full path copied from the NTU OneDrive folder’s address bar. |
 | Gemini can read OneDrive but cannot upload | Check that OneDrive write actions are available in your Gemini app. The ability to add or read a file alone does not confirm write access. |
-| Gemini says it uploaded the script but nothing changes | In File Explorer, check the matching NTU OneDrive project folder for the exact name `apply-changes.ps1`. Verify OneDrive is syncing and the watcher is open for the same project. `apply-changes.ps1.txt` will not trigger it. Enable file extensions under **View → Show → File name extensions** in Windows 11, or the **View** tab in Windows 10. |
-| PowerShell saves an upload as `apply-changes.failed.ps1` or adds a date to that name | Some changes may already have been applied. Compare with your backup, then ask Gemini for a corrected upload after the files are in the state you want. If the watcher could not rename the failed upload and stopped, move `apply-changes.ps1` out of the watched folder before restarting. |
+| Gemini says a `.wav`, `.bin`, or `vibe-payload-…` file is missing from the attachment list | Start a new chat with the updated prompt. The PNG and WAV should be included as Base64 create or replace operations in the one `apply-changes.ps1` upload. |
+| Gemini finds the WAV but says its type is unsupported | Add the Base64 entry, press **R**, wait for OneDrive to sync, and ask for the complete text copy under **asset-bytes**. |
+| Gemini ends the turn after preparing a package | Select `/syncvibecode` or use the [manual upload prompt](#finish-delivery-if-gemini-stops-early) in the same chat while its snapshot is still current. Look for a OneDrive approval or the exact connector error. |
+| Gemini reports an upload and you see no local change | Check the watcher for **[APPLIED]** or a rejection. In File Explorer, check the matching NTU OneDrive project folder for the exact name `apply-changes.ps1`. Verify OneDrive is syncing and the watcher is open for the same project. `apply-changes.ps1.txt` will not trigger it. Enable file extensions under **View → Show → File name extensions** in Windows 11, or the **View** tab in Windows 10. |
+| The watcher rejects a stale snapshot | Press **R** and wait for OneDrive to sync. Copy the ID from the newest **[SNAPSHOT]** line and include `VibeBridge: snapshot <ID>` on its own line in your next change request. Gemini compares the ID with the downloaded snapshot, and the watcher checks the ID again before applying the patch. |
+| The watcher rejects a duplicate patch or executable upload | Press **R**, wait for OneDrive to sync, and ask Gemini to use the updated prompt and fresh snapshot. If the watcher reports an interrupted transaction, inspect the backups and recovery details under **.vibebridge-state/pending** before continuing. |
 | The context is too large | Use **.repomixignore** to exclude bulky files or work on a smaller folder. Press **R** and wait for OneDrive to sync. Google lists a 7 MB text attachment limit, and a model’s usable context can be smaller. [Gemini file limits](https://docs.cloud.google.com/gemini/enterprise/docs/assistant-chat#upload_and_chat_about_files) |
 | The browser switch is missing | Confirm that Tampermonkey and the saved script are enabled, check the browser’s userscript permission, then refresh the **Gemini Enterprise** tab. |
 | The switch shows Done but there is no desktop alert | Check the Gemini site’s notification permission, Windows notification settings, and whether the browser or the system has muted the alert. |
@@ -91,4 +178,42 @@ If you ran an older watcher, press **Q** to stop it and start the updated script
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\vibe-sync.ps1 -OneDrivePath "C:\Users\YourName\OneDrive - Nanyang Technological University"
 ```
 
-**Want to test the watcher without Gemini?** After step 4, you can use this test in place of step 5. With only the practice watcher running, copy the bridge’s [sample apply-changes.ps1](./apply-changes.ps1) into the matching OneDrive practice folder. It creates **bridge-test.txt** with the same test message and refuses to overwrite an existing file. This checks local execution and repacking. Use a fresh practice folder when you are ready to test the Gemini connector.
+### Test the watcher without Gemini
+
+With the practice watcher running and **[READY]** showing, open PowerShell in the bridge folder. Paste the command below. It asks for the **Local Path** and **OneDrive Bus** paths shown by the watcher, then prepares a sample tied to that snapshot. The sample creates `bridge-test.txt`, `assets/preview.png`, and a small stereo WAV at `assets/sample.wav` in a fresh practice folder.
+
+```powershell
+$project = Read-Host 'Paste the Local Path'
+$inbox = Read-Host 'Paste the OneDrive Bus path'
+node .\bridge-delta.cjs sample $project .\apply-changes.ps1 (Join-Path $inbox 'apply-changes.ps1')
+```
+
+Add the three entries from [Share assets back to Gemini](#share-assets-back-to-gemini) to your local practice folder’s `.vibebridge-assets.txt` and press **R** in the watcher. In the OneDrive practice folder, look for **asset-bytes/sample.wav.base64.txt**. To check it without Gemini, open PowerShell in the **local practice folder** and paste the following. When prompted, paste the **OneDrive Bus** folder path shown by the watcher.
+
+```powershell
+$oneDriveProject = Read-Host 'Paste the OneDrive Bus folder path'
+$text = [IO.File]::ReadAllText((Join-Path $oneDriveProject 'asset-bytes\sample.wav.base64.txt'))
+$wav = [Convert]::FromBase64String($text)
+$sha = [Security.Cryptography.SHA256]::Create()
+try { $decodedHash = [BitConverter]::ToString($sha.ComputeHash($wav)).Replace('-', '') }
+finally { $sha.Dispose() }
+$originalHash = (Get-FileHash -Algorithm SHA256 -LiteralPath .\assets\sample.wav).Hash
+if ($wav.Length -ne 60 -or $decodedHash -ne $originalHash) { throw 'WAV verification failed.' }
+'Verified: the text copy decodes to the original WAV.'
+```
+
+Use a fresh practice folder for the [live Gemini change test](#6-send-a-practice-change-and-confirm-it-applied).
+
+## Project files
+
+The launcher, watcher, and delta validator sit together in the bridge folder so the launcher can find its helpers.
+
+| File | Purpose |
+| --- | --- |
+| [setup.ps1](./setup.ps1) | Installs or checks the local tools. |
+| [start-vibe-bridge.cmd](./start-vibe-bridge.cmd), [vibe-sync.ps1](./vibe-sync.ps1), [bridge-delta.cjs](./bridge-delta.cjs) | Start the watcher, publish snapshots, and apply verified deltas. |
+| [SKILL-vibecode.md](./SKILL-vibecode.md), [PROMPT.md](./PROMPT.md) | Importable `/vibecode` skill and standalone coding prompt. |
+| [SKILL-syncvibecode.md](./SKILL-syncvibecode.md) | Importable `/syncvibecode` skill for finishing a pending delivery. |
+| [ntu-gemini-auto-approve.user.js](./ntu-gemini-auto-approve.user.js) | Optional Tampermonkey controls and alerts. |
+| [apply-changes.ps1](./apply-changes.ps1) | Data template for the offline practice test. |
+| [TEST_LOG.md](./TEST_LOG.md) | Chronological results from local and live testing. |

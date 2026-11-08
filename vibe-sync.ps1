@@ -47,6 +47,25 @@ $RemotePath  = Join-Path $ProjectsRoot $ProjectName
 $ContextFile = Join-Path $RemotePath "repo-context.txt"
 $PatchFile   = Join-Path $RemotePath "apply-changes.ps1"
 
+$DeltaTool = Join-Path $PSScriptRoot 'bridge-delta.cjs'
+if (-not (Test-Path -LiteralPath $DeltaTool -PathType Leaf) -or -not (Get-Command node.exe -ErrorAction SilentlyContinue)) {
+    Write-Host '[ERROR] The delta tool or Node.js is missing. Keep the bridge files together and run setup.ps1.' -ForegroundColor Red
+    exit 1
+}
+$StateDir = Join-Path $LocalPath '.vibebridge-state'
+try {
+    [void][IO.Directory]::CreateDirectory($StateDir)
+    $StateItem = Get-Item -LiteralPath $StateDir -Force -ErrorAction Stop
+    if ($StateItem.LinkType) { throw 'The bridge state folder cannot be a link or junction.' }
+    $LockFile = Join-Path $StateDir 'watcher.lock'
+    $LockItem = Get-Item -LiteralPath $LockFile -Force -ErrorAction SilentlyContinue
+    if ($LockItem.LinkType) { throw 'The watcher lock cannot be a link.' }
+    $WatcherLock = [IO.File]::Open($LockFile, 'OpenOrCreate', 'ReadWrite', 'None')
+} catch {
+    Write-Host "[ERROR] Cannot lock the project. Close any other watcher for this project. $_" -ForegroundColor Red
+    exit 1
+}
+
 try {
     [void][System.IO.Directory]::CreateDirectory($RemotePath)
 } catch {
@@ -72,37 +91,217 @@ $IgnoreList = @(
     "*.zip", "*.tar", "*.gz", "*.7z", "*.rar",
     "*.mp4", "*.mov", "*.avi", "*.mp3", "*.wav",
     "*.sqlite", "*.sqlite3", "*.db", ".DS_Store", "Thumbs.db",
-    "repo-context.txt", "apply-changes.ps1", "apply-changes.failed*.ps1"
+    ".vibebridge-state", "repo-context.txt", "apply-changes.ps1", "apply-changes.failed*.ps1"
 ) -join ","
+
+function Resolve-AssetPath([string]$Root, [string[]]$Parts) {
+    $Path = $Root
+    foreach ($Part in $Parts) {
+        $Path = Join-Path $Path $Part
+        $Item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if ($Item -and $Item.LinkType) {
+            throw "Asset paths cannot use links or junctions: $Path"
+        }
+    }
+    return $Path
+}
+
+function Get-AssetHash([string]$Path) {
+    $Stream = [IO.File]::OpenRead($Path)
+    try {
+        $Hasher = [Security.Cryptography.SHA256]::Create()
+        try {
+            return [BitConverter]::ToString($Hasher.ComputeHash($Stream))
+        } finally {
+            $Hasher.Dispose()
+        }
+    } finally {
+        $Stream.Dispose()
+    }
+}
+
+function Get-AssetFolderFiles([string]$Folder, [string]$RelativeFolder) {
+    foreach ($Item in (Get-ChildItem -LiteralPath $Folder -ErrorAction Stop)) {
+        $RelativePath = Join-Path $RelativeFolder $Item.Name
+        if ($Item.LinkType) {
+            Write-Warning "[ASSET] Skipped link or junction: $RelativePath"
+        } elseif ($Item.PSIsContainer) {
+            Get-AssetFolderFiles $Item.FullName $RelativePath
+        } else {
+            $RelativePath
+        }
+    }
+}
+
+function Get-SelectedAssets([string]$List) {
+    foreach ($Line in (Get-Content -LiteralPath $List -Encoding UTF8 -ErrorAction Stop)) {
+        $Entry = $Line.Trim().Replace('/', '\')
+        if (-not $Entry -or $Entry.StartsWith('#')) { continue }
+
+        $AsText = $Entry.StartsWith('base64:', [StringComparison]::OrdinalIgnoreCase)
+        if ($AsText) { $Entry = $Entry.Substring(7).Trim() }
+
+        $IsFolder = $Entry.EndsWith('\')
+        $Entry = $Entry.TrimEnd('\')
+        $Parts = $Entry.Split('\')
+        if ($Parts[0] -ne 'assets' -or (-not $IsFolder -and $Parts.Count -lt 2) -or
+            ($Parts | Where-Object { -not $_ -or $_ -match '[<>:"|?*\x00-\x1f]|[. ]$' })) {
+            throw "List a relative path under assets/ in .vibebridge-assets.txt: $Line"
+        }
+
+        if ($IsFolder -and $AsText) {
+            throw "Use base64: with an individual asset file: $Line"
+        }
+        if ($IsFolder) {
+            $Folder = Resolve-AssetPath $LocalPath $Parts
+            if (-not (Test-Path -LiteralPath $Folder -PathType Container)) {
+                Write-Warning "[ASSET] Local folder missing: $Entry. Check for older copies in OneDrive."
+                continue
+            }
+            Get-AssetFolderFiles $Folder $Entry
+        } elseif ($AsText) {
+            "base64:$Entry"
+        } else {
+            $Entry
+        }
+    }
+}
+
+function Read-AssetBase64([string]$Path, [long]$MaximumBytes) {
+    $Stream = [IO.File]::OpenRead($Path)
+    try {
+        $Length = $Stream.Length
+        if ($Length -gt $MaximumBytes) { return $null }
+        $Reader = [IO.BinaryReader]::new($Stream)
+        try {
+            $Bytes = $Reader.ReadBytes([int]$Length)
+            if ($Bytes.LongLength -ne $Length) { throw "Asset changed while reading: $Path" }
+            return [Convert]::ToBase64String($Bytes)
+        } finally {
+            $Reader.Dispose()
+        }
+    } finally {
+        $Stream.Dispose()
+    }
+}
+
+$AssetFingerprints = @{}
+
+function Sync-OneDriveAssets {
+    $List = Join-Path $LocalPath '.vibebridge-assets.txt'
+    if (-not (Test-Path -LiteralPath $List -PathType Leaf)) { return }
+
+    $Seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($Selection in (Get-SelectedAssets $List)) {
+        if (-not $Seen.Add($Selection)) { continue }
+        $AsText = $Selection.StartsWith('base64:')
+        $Entry = if ($AsText) { $Selection.Substring(7) } else { $Selection }
+        $Parts = $Entry.Split('\')
+
+        $Source = Resolve-AssetPath $LocalPath $Parts
+        if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+            if (Test-Path -LiteralPath $Source -PathType Container) {
+                throw "List individual asset files, not folders: $Entry"
+            }
+            Write-Warning "[ASSET] Local file missing: $Entry. Check for an older copy in OneDrive."
+            continue
+        }
+
+        $DestinationParts = $Parts
+        $LocalFile = Get-Item -LiteralPath $Source -ErrorAction Stop
+        if ($AsText) {
+            $DestinationParts = @('asset-bytes') + $Parts[1..($Parts.Count - 1)]
+            $DestinationParts[-1] += '.base64.txt'
+        }
+        $Destination = Resolve-AssetPath $RemotePath $DestinationParts
+        if ([string]::Equals($Source, $Destination, [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Host "[ASSET] Already in OneDrive folder: $Entry" -ForegroundColor Gray
+            continue
+        }
+
+        $OneDriveFile = $null
+        if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+            $OneDriveFile = Get-Item -LiteralPath $Destination -ErrorAction Stop
+            $Fingerprint = "$($LocalFile.Length):$($LocalFile.LastWriteTimeUtc.Ticks):$($OneDriveFile.Length):$($OneDriveFile.LastWriteTimeUtc.Ticks)"
+            if ($AssetFingerprints[$Selection] -eq $Fingerprint) { continue }
+        }
+
+        $Text = $null
+        if ($AsText) {
+            $Text = Read-AssetBase64 $Source 3MB
+            if ($null -eq $Text) {
+                Write-Warning "[ASSET] Base64 copy skipped for $Entry (source exceeds 3 MiB). Check for an older text copy in OneDrive."
+                continue
+            }
+            $Unchanged = $OneDriveFile -and $OneDriveFile.Length -eq $Text.Length -and
+                [IO.File]::ReadAllText($Destination) -ceq $Text
+        } else {
+            $Unchanged = $OneDriveFile -and $LocalFile.Length -eq $OneDriveFile.Length -and
+                (Get-AssetHash $Source) -eq (Get-AssetHash $Destination)
+        }
+        if ($Unchanged) {
+            $AssetFingerprints[$Selection] = $Fingerprint
+            continue
+        }
+        $AssetFingerprints.Remove($Selection)
+
+        $Folder = [IO.Path]::GetDirectoryName($Destination)
+        [void][IO.Directory]::CreateDirectory($Folder)
+        $Temp = Join-Path $Folder ('.vibe-asset-' + [guid]::NewGuid().ToString('N') + '.tmp')
+        try {
+            if ($AsText) {
+                [IO.File]::WriteAllText($Temp, $Text, [Text.Encoding]::ASCII)
+            } else {
+                [IO.File]::Copy($Source, $Temp)
+            }
+            if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+                [IO.File]::Replace($Temp, $Destination, [NullString]::Value)
+            } else {
+                [IO.File]::Move($Temp, $Destination)
+            }
+        } finally {
+            if ([IO.File]::Exists($Temp)) { [IO.File]::Delete($Temp) }
+        }
+
+        $PublishedPath = $DestinationParts -join '\'
+        Write-Host "[ASSET] Copied to OneDrive folder: $PublishedPath" -ForegroundColor Green
+    }
+}
 
 function Invoke-RepoPack {
     $TimeStr = (Get-Date).ToString("HH:mm:ss")
     Write-Host "`n[$TimeStr] [PACK] Packing '$ProjectName' into repo-context.txt..." -ForegroundColor Cyan
 
-    if (Get-Command repomix.cmd -ErrorAction SilentlyContinue) {
-        repomix.cmd $LocalPath --style plain --output $ContextFile --ignore $IgnoreList | Out-Null
-    } elseif (Get-Command npx.cmd -ErrorAction SilentlyContinue) {
-        Write-Host "[$TimeStr] [INFO] Repomix is not installed globally. Trying npx repomix..." -ForegroundColor DarkYellow
-        npx.cmd --yes repomix $LocalPath --style plain --output $ContextFile --ignore $IgnoreList | Out-Null
-    } else {
-        Write-Host "[$TimeStr] [ERROR] Repomix and npx are missing. Run setup.ps1 from the bridge folder first." -ForegroundColor Red
-        return $false
-    }
-
-    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $ContextFile -PathType Leaf)) {
-        $SizeMB = [math]::Round((Get-Item -LiteralPath $ContextFile).Length / 1MB, 2)
-        Write-Host "[$TimeStr] [READY] repo-context.txt updated ($SizeMB MB)" -ForegroundColor Green
-        if ($SizeMB -gt 7) {
-            Write-Host "[$TimeStr] [WARNING] File exceeds Gemini Enterprise's 7 MB .txt limit ($SizeMB MB)!" -ForegroundColor Red
-            Write-Host "           Add large asset/data folders to .repomixignore or .gitignore." -ForegroundColor Yellow
-        } elseif ($SizeMB -gt 3.5) {
-            Write-Host "[$TimeStr] [NOTE] File is under 7 MB ($SizeMB MB), but may approach context token limits." -ForegroundColor Yellow
+    $PackedFile = Join-Path $StateDir ('packed-' + [guid]::NewGuid().ToString('N') + '.json')
+    try {
+        if (Get-Command repomix.cmd -ErrorAction SilentlyContinue) {
+            repomix.cmd $LocalPath --style json --output $PackedFile --ignore $IgnoreList | Out-Null
+        } elseif (Get-Command npx.cmd -ErrorAction SilentlyContinue) {
+            npx.cmd --yes repomix $LocalPath --style json --output $PackedFile --ignore $IgnoreList | Out-Null
+        } else {
+            throw 'Repomix and npx are missing. Run setup.ps1 from the bridge folder.'
         }
-        return $true
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $PackedFile -PathType Leaf)) {
+            throw 'Repomix did not generate a snapshot.'
+        }
+        Sync-OneDriveAssets
+        node.exe $DeltaTool snapshot $LocalPath $PackedFile $ContextFile | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) { throw 'Could not publish the v2 snapshot.' }
+    } catch {
+        Write-Host "[$TimeStr] [ERROR] Snapshot refresh failed: $_" -ForegroundColor Red
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $PackedFile -Force -ErrorAction SilentlyContinue
     }
 
-    Write-Host "[$TimeStr] [ERROR] Failed to update repo-context.txt. Check the error above before asking Gemini to read it." -ForegroundColor Red
-    return $false
+    $SizeMB = [math]::Round((Get-Item -LiteralPath $ContextFile).Length / 1MB, 2)
+    Write-Host "[$TimeStr] [READY] repo-context.txt updated ($SizeMB MB)" -ForegroundColor Green
+    if ($SizeMB -gt 7) {
+        Write-Warning 'The snapshot exceeds 7 MB. Exclude large files with .repomixignore.'
+    } elseif ($SizeMB -gt 3.5) {
+        Write-Warning 'The snapshot may approach Gemini context limits.'
+    }
+    return $true
 }
 
 function Wait-FileUnlocked([string]$FilePath) {
@@ -143,18 +342,18 @@ while ($true) {
         }
     }
 
-    # Check if Gemini Enterprise dropped an apply-changes.ps1 file in OneDrive
+    # Treat the synced .ps1 filename as data only.
     if (Test-Path -LiteralPath $PatchFile -PathType Leaf) {
         $TimeStr = (Get-Date).ToString("HH:mm:ss")
         Write-Host "`n[$TimeStr] Detected apply-changes.ps1. Waiting for OneDrive to finish syncing..." -ForegroundColor Magenta
 
         if (Wait-FileUnlocked $PatchFile) {
             try {
-                Write-Host "[$TimeStr] Executing AI patch against: $LocalPath" -ForegroundColor Cyan
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PatchFile -ProjectPath $LocalPath
+                Write-Host "[$TimeStr] Validating v2 patch against: $LocalPath" -ForegroundColor Cyan
+                node.exe $DeltaTool apply $LocalPath $PatchFile
 
-                if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-                    throw "Patch exited with code $LASTEXITCODE"
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Patch was rejected or could not finish (exit $LASTEXITCODE)."
                 }
 
                 # Delete apply-changes.ps1 from OneDrive so it never runs twice
