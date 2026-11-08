@@ -148,7 +148,15 @@ function payload(bytes) {
     return JSON.parse(text.slice(HEADER.length));
 }
 
-function encodedBytes(operation) {
+function wholeFileBytes(operation) {
+    if (Object.hasOwn(operation, 'text')) {
+        requireThat(operation.op === 'create' && !Object.hasOwn(operation, 'base64'),
+            'Text payload requires a create operation with no Base64 field.');
+        requireThat(typeof operation.text === 'string', 'Text payload must be a string.');
+        const bytes = Buffer.from(operation.text, 'utf8');
+        requireThat(bytes.toString('utf8') === operation.text, 'Text payload contains invalid Unicode.');
+        return bytes;
+    }
     const value = operation.base64;
     requireThat(typeof value === 'string', 'Full file operations require Base64 bytes.');
     const bytes = Buffer.from(value, 'base64');
@@ -209,7 +217,7 @@ function prepare(root, patch, snapshot) {
             const view = before && textView(before);
             requireThat(op === 'create' || !isSnapshotText || view?.eol === 'mixed',
                 'Use text edits for existing snapshot text: ' + relative);
-            after = encodedBytes(operation);
+            after = wholeFileBytes(operation);
         } else if (op === 'delete') {
             requireThat(operation.confirmDelete === true, 'Deletion requires explicit authorization: ' + relative);
             after = null;
@@ -221,8 +229,57 @@ function prepare(root, patch, snapshot) {
         }
         transactionBytes += (before?.length ?? 0) + (after?.length ?? 0);
         requireThat(transactionBytes <= 64 * 1024 * 1024, 'Patch transaction exceeds 64 MiB. Split the change.');
-        return { relative, file, before, after };
+        return { op, relative, file, before, after };
     });
+}
+
+function countLineChanges(before, after) {
+    const oldLines = textView(before).text.match(/[^\n]*\n|[^\n]+/g) ?? [];
+    const newLines = textView(after).text.match(/[^\n]*\n|[^\n]+/g) ?? [];
+    let oldEnd = oldLines.length;
+    let newEnd = newLines.length;
+    let start = 0;
+    while (start < oldEnd && start < newEnd && oldLines[start] === newLines[start]) start++;
+    while (start < oldEnd && start < newEnd && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+        oldEnd--;
+        newEnd--;
+    }
+    const oldCount = oldEnd - start;
+    const newCount = newEnd - start;
+    if (!oldCount || !newCount) return { added: newCount, removed: oldCount };
+
+    // Myers line diff. Cap the work so a large rewrite can still be applied promptly.
+    let budget = 250_000;
+    const furthest = new Map([[1, 0]]);
+    for (let distance = 0; distance <= oldCount + newCount; distance++) {
+        for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+            if (--budget < 0) return null;
+            const deletion = furthest.get(diagonal - 1);
+            const insertion = furthest.get(diagonal + 1);
+            let x = diagonal === -distance || (diagonal !== distance && deletion < insertion)
+                ? insertion : deletion + 1;
+            let y = x - diagonal;
+            while (x < oldCount && y < newCount && oldLines[start + x] === newLines[start + y]) {
+                if (--budget < 0) return null;
+                x++;
+                y++;
+            }
+            if (x >= oldCount && y >= newCount) {
+                const added = (distance + newCount - oldCount) / 2;
+                return { added, removed: distance - added };
+            }
+            furthest.set(diagonal, x);
+        }
+    }
+    return null;
+}
+
+function describeChange({ op, relative, before, after }) {
+    const label = ' [' + op.toUpperCase() + '] ' + relative;
+    if (op !== 'edit') return label;
+    const counts = countLineChanges(before, after);
+    return counts ? label + ' (+' + counts.added + ' lines, -' + counts.removed + ' lines)'
+        : label + ' (line counts unavailable for large diff)';
 }
 
 function checkBase(root, entry) {
@@ -315,10 +372,12 @@ function applyPatch(root, source) {
         ', watcher expects ' + snapshot.snapshotId + '. Download the current repo-context.txt and regenerate the patch.');
     requireThat(!info(path.join(state, 'used-' + patch.snapshotId)), 'This snapshot already had an apply attempt. Refresh the watcher.');
     const entries = prepare(root, patch, snapshot);
+    const summaries = entries.map(describeChange);
     const packageHash = digest(bytes);
     console.log('[PATCH] ' + patch.patchId + ' SHA-256 ' + packageHash);
     commit(root, state, receipt, patch, packageHash, entries);
     console.log('[APPLIED] ' + patch.patchId + ' (' + entries.length + ' files)');
+    for (const summary of summaries) console.log(summary);
 }
 
 function makeSample(root, template, destination) {

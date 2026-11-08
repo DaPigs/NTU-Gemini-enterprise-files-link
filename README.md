@@ -2,9 +2,9 @@
 
 Use NTU Gemini Enterprise to edit a project folder on your Windows PC. You describe the changes in chat, and the bridge moves them through your NTU OneDrive.
 
-**Current workflow.** Start the Windows watcher, open a Gemini chat with `/vibecode <ProjectName>`, and ask for a change. If Gemini stops after preparing the patch, use `/syncvibecode now` in the same chat or paste the [manual upload prompt](#finish-delivery-if-gemini-stops-early). Delivery after a follow-up has worked in live testing. First-turn delivery is still unreliable.
+**Current workflow.** Import both [skill ZIPs](#5-import-the-gemini-skills-and-start-a-chat), start the Windows watcher, and ask for a change in a Gemini chat with `/vibecode <ProjectName>`. The skill prepares a Delta v2 package and requests the OneDrive upload in the same turn. QuickCafeRetest completed that workflow in 2m59s. If Gemini stops after preparing a valid package, use `/syncvibecode now` in the same chat or paste the [manual upload prompt](#finish-delivery-if-gemini-stops-early).
 
-Each change travels as one data package named `apply-changes.ps1`. The watcher checks the project, snapshot, patch ID, and file operations before applying it. Text edits match the current file, and full-file writes use Base64. See [TEST_LOG.md](./TEST_LOG.md) for the live tests and local checks.
+Each change travels as one data package named `apply-changes.ps1`. The watcher checks the project, snapshot, patch ID, and file operations before applying it. Text edits match the current file. New UTF-8 files use plain text in the package, and binary files and full-file replacements use Base64. See [TEST_LOG.md](./TEST_LOG.md) for the live tests and local checks.
 
 **Start with a practice folder.** The watcher applies verified changes under your selected local project. Keep a backup and use files you are allowed to share with Gemini. The browser switch controls approval clicks. The watcher has its own PowerShell window.
 
@@ -45,15 +45,15 @@ The setup installs or checks **Node.js**, which runs the file-packing tool, and 
 
 > **Two folders to remember.** Gemini reads and writes inside **NTU OneDrive → projects → VibeBridgePractice**. Your actual project files, including **hello.txt**, are in the **local practice folder**. Use the same project name in both places if you added a number.
 
-## 5. Import the Gemini skill and start a chat
+## 5. Import the Gemini skills and start a chat
 
-1. In Gemini Enterprise, open **Skills** in the left menu. Use **+ → Upload skill → Import** to import [SKILL-vibecode.md](./SKILL-vibecode.md) for `/vibecode` and [SKILL-syncvibecode.md](./SKILL-syncvibecode.md) for `/syncvibecode` separately. If the importer requires the standard filename, copy each file to a separate folder and name each copy `SKILL.md`. [Google’s skill guide](https://docs.cloud.google.com/gemini/enterprise/docs/skills#upload_a_skill_to_the_web_app)
+1. In Gemini Enterprise, open **Skills** in the left menu. Choose **+ → Upload skill**, select [vibecode.zip](./vibecode.zip), and click **Import**. Repeat for [syncvibecode.zip](./syncvibecode.zip). Upload each ZIP as-is. Each includes its instructions and Python helper. [Google’s skill guide](https://docs.cloud.google.com/gemini/enterprise/docs/skills#upload_a_skill_to_the_web_app)
 2. Open a regular **New chat**. Type `/` in the message box and choose **vibecode** from the skill menu. After the skill mention, type the exact **Project Name** shown by the watcher. For the practice folder, the first line should look like `/vibecode VibeBridgePractice`. Add your request on the next line.
 3. Send the skill and project name with this request on the next line. A matching sentence confirms Gemini can read the snapshot.
 
    > Read `repo-context.txt` from this project’s OneDrive folder and quote the sentence in `hello.txt`.
 
-If **Skills** or **Upload skill** is missing, use [PROMPT.md](./PROMPT.md) instead. Paste its **Message to paste** block into a fresh chat and replace the project name on the first line. The optional browser widget’s **Copy prompt** button copies that same message. To update an imported skill, open it under **Skills**, choose **⋮ → Edit**, paste the Markdown instructions from the matching skill file below its YAML header, and save. [Google’s instructions for updating a skill](https://docs.cloud.google.com/gemini/enterprise/docs/skills#update_a_skill)
+If you already installed an older version, replace the old skills by importing the current ZIPs, then open a fresh chat. If **Skills** or **Upload skill** is missing, use the **Message to paste** block in [PROMPT.md](./PROMPT.md). Replace the project name on the first line before sending it.
 
 ## 6. Send a practice change and confirm it applied
 
@@ -63,22 +63,24 @@ If **Skills** or **Upload skill** is missing, use [PROMPT.md](./PROMPT.md) inste
 
 2. Look for a OneDrive **Upload file** confirmation or an actual upload result. If Gemini prepared a patch but stopped before uploading it, use `/syncvibecode now` or copy the [manual upload prompt](#finish-delivery-if-gemini-stops-early).
 3. When a confirmation appears, check that it uploads **apply-changes.ps1** to the OneDrive folder for your practice project. Click **Send**, or let the [optional browser switch](#optional-browser-switch-and-completion-alerts) approve the card if you have enabled it.
-4. In PowerShell, look for **[PATCH]** with the package ID, **[APPLIED]** for the same ID, and a new **[READY]**. Open **bridge-test.txt** in your **local practice folder** and check the sentence. After a successful apply, the watcher removes the completed upload from OneDrive and publishes a fresh snapshot.
+4. In PowerShell, look for **[PATCH]** with the patch ID, **[APPLIED]** for the same ID, and a new **[READY]**. The watcher lists each affected file below **[APPLIED]**. For this test, look for `[CREATE] bridge-test.txt`. Open the file in your **local practice folder** and check the sentence. After a successful apply, the watcher removes the completed upload from OneDrive and publishes a fresh snapshot.
 
 ### Finish delivery if Gemini stops early
 
-If Gemini prepared `apply-changes.ps1` but stopped before uploading it, select **syncvibecode** in the **same Gemini chat** and type `now` after the skill mention. Send `/syncvibecode now` to upload the existing package immediately. This skips Gemini’s snapshot and upload-slot checks and repackaging. The watcher validates the patch when it arrives.
+If Gemini prepared `apply-changes.ps1` but stopped before uploading it, select **syncvibecode** in the **same Gemini chat** and type `now` after the skill mention. Send `/syncvibecode now` to check the retained package’s format and upload its exact text. This skips Gemini’s snapshot and upload-slot checks and repackaging. The watcher validates the patch when it arrives.
 
-Use `/syncvibecode` on its own for verified recovery if Gemini needs to recover the tested files and rebuild the package. If a OneDrive confirmation is already pending, approve that card.
+If the package is missing or malformed, use `/syncvibecode` without `now`. That mode checks the snapshot and recovers the tested files so Gemini can rebuild the package. If a OneDrive confirmation is already pending, approve that card.
 
 **Manual upload prompt**
 
 To request the same immediate upload without the skill, copy this block into the **same chat**.
 
 ```text
-Upload the complete apply-changes.ps1 package you already prepared for the previous change in this chat. Your next action is Microsoft OneDrive Upload file. Use the original project folder at projects/<ProjectName> and the exact prepared text as direct Content. Set FileName to apply-changes.ps1 and set HasBytes to false when available. Use InputFileName: apply-changes.ps1 if required.
+Retrieve the exact delta prepared for the previous change. In Python, read the exact text as ASCII and validate it with validate_delta_envelope(content, project) from the start prompt, or check the same fields directly in Python if the helper is unavailable. It must have the VibeBridge Delta v2 header and a JSON object with version 2, the exact project, snapshotId, patchId, and operations. If the package is missing or malformed, report that blocker and suggest plain /syncvibecode for verified recovery.
 
-Skip the snapshot check, the upload-slot check, file reconstruction, tests, and repackaging. Read the prepared package as-is if it is stored in the workspace. Resolve the project folder ID only if the upload action requires it and the ID is unavailable. If the complete package is unavailable, report that. If this upload already succeeded or is awaiting approval in this chat, report its existing status. Otherwise, call Upload file now and report the actual connector result, pending approval, or exact error.
+Skip snapshot and slot checks, file reconstruction, tests, and repackaging. Resolve the original project folder by exact path only if its ID is required and unavailable. If an earlier upload succeeded, is pending approval, or has an uncertain outcome, report its status.
+
+Call the registered OneDrive Upload file action with the exact retained package as direct Content. Keep the patch ID, set FileName to apply-changes.ps1, and set HasBytes to false when available. Use apply-changes.ps1 as InputFileName if required. Reply with the connector result, pending approval, or exact blocker. Keep tool markup, source, and package text out of the visible reply.
 ```
 
 Approve the OneDrive card when it appears. Wait for **[APPLIED]** and a fresh **[READY]** before sending another change.
@@ -168,7 +170,7 @@ Use the `Get-Item` command at the start of this section to compare the reported 
 | Gemini can read OneDrive but cannot upload | Check that OneDrive write actions are available in your Gemini app. The ability to add or read a file alone does not confirm write access. |
 | Gemini says a `.wav`, `.bin`, or `vibe-payload-…` file is missing from the attachment list | Start a new chat with the updated prompt. The PNG and WAV should be included as Base64 create or replace operations in the one `apply-changes.ps1` upload. |
 | Gemini finds the WAV but says its type is unsupported | Add the Base64 entry, press **R**, wait for OneDrive to sync, and ask for the complete text copy under **asset-bytes**. |
-| Gemini ends the turn after preparing a package | Use `/syncvibecode now` or the [manual upload prompt](#finish-delivery-if-gemini-stops-early) in the same chat. Use `/syncvibecode` on its own if the prepared package needs to be rebuilt. Look for a OneDrive approval or the exact connector error. |
+| Gemini prints tool-call text or ends after preparing a package | Look for a real OneDrive approval card or connector result. If neither appears, use `/syncvibecode now` or the [manual upload prompt](#finish-delivery-if-gemini-stops-early) in the same chat. Use plain `/syncvibecode` if the package needs to be rebuilt. |
 | Gemini reports an upload and you see no local change | Check the watcher for **[APPLIED]** or a rejection. In File Explorer, check the matching NTU OneDrive project folder for the exact name `apply-changes.ps1`. Verify OneDrive is syncing and the watcher is open for the same project. `apply-changes.ps1.txt` will not trigger it. Enable file extensions under **View → Show → File name extensions** in Windows 11, or the **View** tab in Windows 10. |
 | The watcher rejects a stale snapshot | Press **R** and wait for OneDrive to sync. Copy the ID from the newest **[SNAPSHOT]** line and include `VibeBridge: snapshot <ID>` on its own line in your next change request. Gemini compares the ID with the downloaded snapshot, and the watcher checks the ID again before applying the patch. |
 | The watcher rejects a duplicate patch or executable upload | Press **R**, wait for OneDrive to sync, and ask Gemini to use the updated prompt and fresh snapshot. If the watcher reports an interrupted transaction, inspect the backups and recovery details under **.vibebridge-state/pending** before continuing. |
@@ -211,8 +213,9 @@ The launcher, watcher, and delta validator sit together in the bridge folder so 
 | --- | --- |
 | [setup.ps1](./setup.ps1) | Installs or checks the local tools. |
 | [start-vibe-bridge.cmd](./start-vibe-bridge.cmd), [vibe-sync.ps1](./vibe-sync.ps1), [bridge-delta.cjs](./bridge-delta.cjs) | Start the watcher, publish snapshots, and apply verified deltas. |
-| [SKILL-vibecode.md](./SKILL-vibecode.md), [PROMPT.md](./PROMPT.md) | Importable `/vibecode` skill and standalone coding prompt. |
-| [SKILL-syncvibecode.md](./SKILL-syncvibecode.md) | Importable `/syncvibecode` skill for finishing a pending delivery. |
+| [vibecode.zip](./vibecode.zip) | Importable `/vibecode` skill for coding and delivery. |
+| [syncvibecode.zip](./syncvibecode.zip) | Importable `/syncvibecode` skill for finishing or recovering an upload. |
+| [PROMPT.md](./PROMPT.md) | Standalone coding and upload prompts. |
 | [ntu-gemini-auto-approve.user.js](./ntu-gemini-auto-approve.user.js) | Optional Tampermonkey controls and alerts. |
 | [apply-changes.ps1](./apply-changes.ps1) | Data template for the offline practice test. |
 | [TEST_LOG.md](./TEST_LOG.md) | Chronological results from local and live testing. |
